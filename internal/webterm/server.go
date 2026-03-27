@@ -4,7 +4,9 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,17 +20,19 @@ import (
 var staticFS embed.FS
 
 type Config struct {
-	BaseURL string
 	Bus     *events.Bus
 	Manager *terminal.Manager
 	Tokens  *TokenStore
+	Store   *DashboardStateStore
+	Auth    *ConsoleAuth
 }
 
 type Server struct {
-	baseURL  string
 	bus      *events.Bus
 	manager  *terminal.Manager
 	tokens   *TokenStore
+	store    *DashboardStateStore
+	auth     *ConsoleAuth
 	upgrader websocket.Upgrader
 }
 
@@ -41,10 +45,11 @@ type clientMessage struct {
 
 func NewServer(cfg Config) *Server {
 	return &Server{
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		bus:     cfg.Bus,
 		manager: cfg.Manager,
 		tokens:  cfg.Tokens,
+		store:   cfg.Store,
+		auth:    cfg.Auth,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -53,12 +58,234 @@ func NewServer(cfg Config) *Server {
 	}
 }
 
-func (s *Server) IssueURL(chatID int64) (string, error) {
-	token, err := s.tokens.Issue(chatID)
-	if err != nil {
-		return "", err
+func (s *Server) requireConsoleAuth(w http.ResponseWriter, r *http.Request) bool {
+	if s.auth == nil {
+		return true
 	}
-	return s.baseURL + "/term?token=" + token, nil
+	return s.auth.RequireAuth(w, r)
+}
+
+func (s *Server) HandleAuthSession(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"enabled": false, "authenticated": true})
+		return
+	}
+	s.auth.HandleSession(w, r)
+}
+
+func (s *Server) HandleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "enabled": false})
+		return
+	}
+	s.auth.HandleLogin(w, r)
+}
+
+func (s *Server) HandleAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if s.auth == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		return
+	}
+	s.auth.HandleLogout(w, r)
+}
+
+func (s *Server) HandleDashboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	content, err := staticFS.ReadFile("static/dashboard.html")
+	if err != nil {
+		http.Error(w, "page not available", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(content)
+}
+
+func (s *Server) HandleIssueWSToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireConsoleAuth(w, r) {
+		return
+	}
+
+	chatID, err := parseChatID(r)
+	if err != nil {
+		http.Error(w, "invalid chat_id", http.StatusBadRequest)
+		return
+	}
+
+	wsToken, expiresAt, err := s.tokens.IssueWSToken(chatID)
+	if err != nil {
+		http.Error(w, "issue token failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"chat_id":    chatID,
+		"ws_token":   wsToken,
+		"ws_url":     "/term/ws?token=" + wsToken,
+		"expires_at": expiresAt.Format(time.RFC3339),
+	})
+}
+
+func (s *Server) HandleDashboardState(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "dashboard state store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.requireConsoleAuth(w, r) {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		s.handleGetDashboardState(w, r)
+	case http.MethodPost:
+		s.handleSaveDashboardState(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleGetDashboardState(w http.ResponseWriter, r *http.Request) {
+	profileID := strings.TrimSpace(r.URL.Query().Get("profile_id"))
+	if !validProfileID(profileID) {
+		http.Error(w, "invalid profile_id", http.StatusBadRequest)
+		return
+	}
+
+	payload, found, err := s.store.Get(profileID)
+	if err != nil {
+		http.Error(w, "read dashboard state failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if !found {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"profile_id": profileID,
+			"found":      false,
+			"payload": map[string]any{
+				"services": []any{},
+				"windows":  []any{},
+			},
+		})
+		return
+	}
+
+	var parsed any
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"profile_id": profileID,
+			"found":      false,
+			"payload": map[string]any{
+				"services": []any{},
+				"windows":  []any{},
+			},
+		})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"profile_id": profileID,
+		"found":      true,
+		"payload":    parsed,
+	})
+}
+
+func (s *Server) handleSaveDashboardState(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ProfileID string          `json:"profile_id"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+	req.ProfileID = strings.TrimSpace(req.ProfileID)
+	if !validProfileID(req.ProfileID) {
+		http.Error(w, "invalid profile_id", http.StatusBadRequest)
+		return
+	}
+	payload := strings.TrimSpace(string(req.Payload))
+	if payload == "" || payload == "null" {
+		http.Error(w, "payload is required", http.StatusBadRequest)
+		return
+	}
+	if len(payload) > 1_000_000 {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	var tmp any
+	if err := json.Unmarshal([]byte(payload), &tmp); err != nil {
+		http.Error(w, "payload must be valid json", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.store.Save(req.ProfileID, payload); err != nil {
+		http.Error(w, "save dashboard state failed", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func validProfileID(v string) bool {
+	v = strings.TrimSpace(v)
+	if len(v) < 8 || len(v) > 128 {
+		return false
+	}
+	for _, ch := range v {
+		if ch >= 'a' && ch <= 'z' {
+			continue
+		}
+		if ch >= 'A' && ch <= 'Z' {
+			continue
+		}
+		if ch >= '0' && ch <= '9' {
+			continue
+		}
+		switch ch {
+		case '-', '_', '.':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func parseChatID(r *http.Request) (int64, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("chat_id"))
+	if raw != "" {
+		chatID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || chatID == 0 {
+			return 0, strconv.ErrSyntax
+		}
+		return chatID, nil
+	}
+
+	if r.Method == http.MethodPost {
+		var req struct {
+			ChatID int64 `json:"chat_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.ChatID != 0 {
+			return req.ChatID, nil
+		}
+	}
+
+	return 0, errors.New("chat_id required")
 }
 
 func (s *Server) HandlePage(w http.ResponseWriter, r *http.Request) {

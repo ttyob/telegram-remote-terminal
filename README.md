@@ -1,198 +1,113 @@
 # terminal-bridge
 
-使用 Go 启动并管理 Shell 会话，通过 Telegram 消息进行远程控制。
-终端输出会近实时回传到 Telegram，同时提供 WebSocket 接口，便于后续接入飞书或自定义前端。
+一个基于 Go 的远程终端桥接服务，提供：
 
-## 功能特性
+- Web 控制台（首页 `/`）
+- WebTerm 临时 token 机制（`/term/api/ws-token` -> `/term/ws`）
+- 多会话隔离（按 `chat_id`）
+- 审计日志（JSONL）
 
-- 按 Telegram `chat_id` 隔离会话（每个会话独立 Shell）
-- 仅允许 Telegram 私聊（群聊/频道消息默认拒绝）
-- 普通模式下一条命令对应一次聚合回复（自动分片）
-- 会话控制：`/new`、`/reset`
-- 交互输入：`/send`、`/enter`、`/ctrlc`、`/ctrld`
-- 历史/补全辅助：`/tab`、`/up`、`/down`
-- 流式模式：`/attach`、`/detach`
-- Web 终端短链：`/open`（适合 `codex` / `opencode`）
-- 空闲会话自动回收
-- 命令安全策略：前缀白名单 + 子串黑名单
-- JSONL 审计日志（命令、来源、用户、结果）
-- Telegram 输出采用 HTML `<pre>`，避免 Markdown 转义问题
-- 输出标签：`[OUT]`、`[ERR]`、`[SESSION]`
-- 内部 WebSocket 通道：`/ws`
+## 功能概览
+
+- 多 SSH 服务管理与多窗口切换
+- 移动端适配：服务面板/窗口面板抽屉化，主终端区域优先
+- 会话空闲自动回收（默认 30m）
+- 输出历史回放窗口（默认 24h）
+- 控制台密码登录（Cookie 会话）
+- 仪表盘状态持久化（SQLite，可选加密）
+- 命令白名单前缀 + 黑名单子串策略（可用于命令执行路径约束）
 
 ## 快速开始
 
-1. 复制环境变量模板：
+1) 复制配置
 
 ```bash
 cp .env.example .env
 ```
 
-2. 至少配置以下项：
+2) 最少建议配置
 
-- `TELEGRAM_ENABLED`（默认 `true`，本地纯调试可设为 `false`）
-- `TELEGRAM_BOT_TOKEN`（当 `TELEGRAM_ENABLED=true` 时必填）
-- `ALLOWED_TELEGRAM_USERS` / `ALLOWED_TELEGRAM_CHATS`（强烈建议配置）
-- `COMMAND_ALLOW_PREFIXES` / `COMMAND_DENY_SUBSTRINGS`（按需收敛权限）
+- `LISTEN_ADDR`
+- `CONSOLE_AUTH_PASSWORD_HASH`
+- `COMMAND_ALLOW_PREFIXES` / `COMMAND_DENY_SUBSTRINGS`
 
-3. 启动：
+3) 启动
 
 ```bash
 go run ./cmd/bridge
 ```
 
-## Docker 部署
+4) 访问
 
-1. 准备配置：
+- 控制台：`http://127.0.0.1:8083/`
+- 健康检查：`http://127.0.0.1:8083/healthz`
+
+## Docker
 
 ```bash
 cp .env.example .env
-```
-
-2. 按需修改 `.env`（本地调试可先 `TELEGRAM_ENABLED=false`）。
-
-3. 构建并启动：
-
-```bash
 docker compose up -d --build
 ```
 
-若构建阶段出现 `go mod download` 超时（例如无法访问 `proxy.golang.org`），可在 `.env` 中设置：
+构建网络受限时可配置：
 
 ```text
 DOCKER_GOPROXY=https://goproxy.cn,direct
 DOCKER_GOSUMDB=sum.golang.google.cn
 ```
 
-然后重新构建：
+## 主要接口
 
-```bash
-docker compose build --no-cache
-docker compose up -d
-```
+- `GET /`：Web 控制台页面
+- `GET /healthz`：健康检查
+- `GET|POST /term/api/ws-token?chat_id=<id>`：申请 WebTerm WS token（需已登录控制台）
+- `GET /term/ws?token=<ws_token>`：WebTerm 终端连接
+- `GET|POST /term/api/state`：仪表盘状态读写（需已登录控制台）
+- `GET|POST /term/api/auth/*`：控制台登录会话相关接口
 
-4. 健康检查：
+## 配置说明
 
-```bash
-curl --noproxy '*' http://127.0.0.1:8083/healthz
-```
+见 `.env.example`，重点如下：
 
-说明：
+- 终端行为：`SHELL_PATH`、`TERMINAL_WORKDIR`
+- 服务监听：`LISTEN_ADDR`
+- 会话与历史：`SESSION_IDLE_TIMEOUT`、`EVENT_HISTORY_TTL`
+- 安全策略：`COMMAND_ALLOW_PREFIXES`、`COMMAND_DENY_SUBSTRINGS`
+- 审计日志：`AUDIT_LOG_PATH`
+- 控制台登录：`CONSOLE_AUTH_PASSWORD_HASH`、`CONSOLE_AUTH_SESSION_TTL`
+- 状态存储：`DASHBOARD_DB_PATH`、`DASHBOARD_ENCRYPTION_KEY`
 
-- 命令在容器内执行
-- `./logs` 挂载到 `/app/logs`，用于持久化审计日志
-- 项目目录挂载到 `/workspace`，默认工作目录也是 `/workspace`
+## 安全建议（重要）
 
-## 本地仅调试模式（不接 Telegram）
+- 强烈建议设置 `CONSOLE_AUTH_PASSWORD_HASH`，不要关闭控制台登录
+- 强烈建议通过 Nginx/防火墙限制来源 IP，不要直接公网裸露
+- 生产环境务必启用 HTTPS 反代
+- 若保存 SSH 密码，建议同时设置 `DASHBOARD_ENCRYPTION_KEY`
+- 配置 `COMMAND_ALLOW_PREFIXES` 时尽量最小化允许范围
+- 定期检查 `AUDIT_LOG_PATH` 日志
 
-如果你想先调 `/ws` 和 `/term`：
+## 安全自检结果（当前版本）
 
-```text
-TELEGRAM_ENABLED=false
-```
+以下是已识别的风险点（按优先级）：
 
-正常启动后即可本地联调。
+1. WebSocket `CheckOrigin` 为全放行，跨站环境需结合反向代理策略
+2. 交互输入路径（WebTerm 输入）不走前缀白名单校验
+3. 未配置 `DASHBOARD_ENCRYPTION_KEY` 时，状态数据明文存储在 SQLite
 
-若要在不使用 Telegram `/open` 的情况下测试网页终端，可开启调试发链接口：
+建议：
 
-```text
-WEB_TERM_DEBUG_ENABLED=true
-```
+- 在反代层限制 Origin、IP、BasicAuth 或统一 SSO
+- 对外网部署务必启用 TLS + 访问控制
 
-然后获取临时链接：
+## 审计日志
 
-```bash
-curl --noproxy '*' "http://127.0.0.1:8083/term/debug/open?chat_id=1"
-```
+默认路径：`logs/audit.log`
 
-返回 JSON 中会包含可访问的 `url`。
+格式为 JSONL，每行一条，包含：
 
-## Telegram 使用说明
-
-- 先发 `/start` 查看帮助
-- 必须私聊机器人（群聊会被拒绝）
-- 直接发送命令即可，例如：
-
-```text
-pwd
-ls -la
-top
-```
-
-- ` /new` 重置当前会话
-- `/open` 获取网页终端链接
-- 交互操作命令：
-
-```text
-/send y
-/enter
-/ctrlc
-/ctrld
-/tab
-/up
-/down
-/attach
-/detach
-/open
-```
-
-## Web 终端
-
-- 在 Telegram 发送 `/open` 获取临时访问链接
-- 页面地址：`/term?token=<token>`
-- 终端 WS：`/term/ws?token=<token>`
-- `WEB_PUBLIC_BASE_URL` 控制外部访问基地址
-- `WEB_TERM_TOKEN_TTL` 控制 token 有效期
-- 同一个页面链接在 token 有效期内可重复打开并重连原会话
-- 页面关闭后会话不会立刻销毁，直到 `SESSION_IDLE_TIMEOUT`
-- 支持断线自动重连、连接状态显示、窗口 resize 同步
-- 移动端已适配（含工具面板、输入框、常用快捷键）
-- 网页输入框执行 `codex`/`opencode` 时会自动补 `TERM=dumb` + 低色环境变量
-- 刷新回放历史窗口由 `EVENT_HISTORY_TTL` 控制（默认 `24h`）
-
-## WebSocket API
-
-连接地址示例：
-
-```text
-ws://127.0.0.1:8080/ws?chat_id=<chat_id>&token=<WS_TOKEN>
-```
-
-客户端发送：
-
-```json
-{"chat_id": 123456789, "command": "ls -la"}
-```
-
-服务端返回：
-
-```json
-{"chat_id": 123456789, "data": "...", "type": "output", "timestamp": "2026-03-27T12:00:00Z"}
-```
-
-## 安全建议
-
-- 用 `ALLOWED_TELEGRAM_USERS` 限制用户
-- 用 `ALLOWED_TELEGRAM_CHATS` 限制会话
-- 用 `COMMAND_ALLOW_PREFIXES` + `COMMAND_DENY_SUBSTRINGS` 收敛风险命令
-- 定期检查 `AUDIT_LOG_PATH` 的 JSONL 审计记录
-- 建议在沙箱/容器中运行，并限制文件系统和网络权限
-- 避免使用 root 运行
-- 对外开放 `/ws` 时务必设置 `WS_TOKEN`
-
-## Telegram 代理说明
-
-- 支持 `http://`、`https://`、`socks5://`
-- `TELEGRAM_API_ENDPOINT` 必须保留 `bot%s/%s` 两个占位符
-- `TELEGRAM_REQUEST_TIMEOUT` 应大于 `TELEGRAM_LONG_POLL_TIMEOUT`
-- 示例：
-
-```text
-TELEGRAM_PROXY_URL=http://127.0.0.1:7890
-```
-
-## 后续计划
-
-- 接入飞书适配器，统一多渠道接口
-- 增强审计存储（更完整的操作者、时间、退出码）
-- 继续完善命令策略能力（更细粒度 allow/deny）
+- 时间戳
+- chat_id
+- 来源（webterm/internal）
+- 命令（交互输入为预览摘要）
+- 是否允许
+- 错误信息（如有）

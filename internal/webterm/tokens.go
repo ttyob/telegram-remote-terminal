@@ -45,6 +45,20 @@ func (s *TokenStore) Issue(chatID int64) (string, error) {
 	return token, nil
 }
 
+func (s *TokenStore) IssueWSToken(chatID int64) (string, time.Time, error) {
+	wsToken, err := newToken()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	expiresAt := time.Now().Add(s.ttl)
+
+	s.mu.Lock()
+	s.wsTokens[wsToken] = tokenEntry{chatID: chatID, expiresAt: expiresAt}
+	s.mu.Unlock()
+
+	return wsToken, expiresAt, nil
+}
+
 func (s *TokenStore) UsePageToken(token string) (string, int64, bool) {
 	now := time.Now()
 

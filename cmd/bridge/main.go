@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -17,10 +15,8 @@ import (
 	"terminal-bridge/internal/audit"
 	"terminal-bridge/internal/config"
 	"terminal-bridge/internal/events"
-	"terminal-bridge/internal/telegram"
 	"terminal-bridge/internal/terminal"
 	"terminal-bridge/internal/webterm"
-	"terminal-bridge/internal/ws"
 )
 
 func main() {
@@ -55,83 +51,35 @@ func main() {
 	}
 	defer mgr.Close()
 
-	wsServer := ws.NewServer(ws.Config{
-		Bus:           bus,
-		Manager:       mgr,
-		ReadToken:     cfg.WSToken,
-		DefaultChatID: cfg.DefaultWSChatID,
-	})
+	dashboardStore, err := webterm.NewDashboardStateStore(cfg.DashboardDBPath, cfg.DashboardEncryptionKey)
+	if err != nil {
+		slog.Error("create dashboard state store failed", "error", err)
+		os.Exit(1)
+	}
+	defer dashboardStore.Close()
+	consoleAuth := webterm.NewConsoleAuth(cfg.ConsoleAuthPasswordHash, cfg.ConsoleAuthSessionTTL)
 	webTermTokens := webterm.NewTokenStore(cfg.WebTermTokenTTL)
 	webTermServer := webterm.NewServer(webterm.Config{
-		BaseURL: cfg.WebPublicBaseURL,
 		Bus:     bus,
 		Manager: mgr,
 		Tokens:  webTermTokens,
+		Store:   dashboardStore,
+		Auth:    consoleAuth,
 	})
 
-	var tg *telegram.Bot
-	if cfg.TelegramEnabled {
-		tg, err = telegram.NewBot(telegram.Config{
-			Token:           cfg.TelegramBotToken,
-			APIEndpoint:     cfg.TelegramAPIEndpoint,
-			ProxyURL:        cfg.TelegramProxyURL,
-			RequestTimeout:  cfg.TelegramRequestTimeout,
-			LongPollTimeout: cfg.TelegramLongPollTimeout,
-			OpenWebTermURL:  webTermServer.IssueURL,
-			AllowedUsers:    cfg.AllowedTelegramUsers,
-			AllowedChats:    cfg.AllowedTelegramChats,
-			MaxChunkSize:    cfg.MaxOutputChunk,
-			Bus:             bus,
-			Manager:         mgr,
-		})
-		if err != nil {
-			slog.Error("create telegram bot failed", "error", err)
-			os.Exit(1)
-		}
-	} else {
-		slog.Info("telegram bot disabled by config")
-	}
-
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", webTermServer.HandleDashboard)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("/ws", wsServer.HandleWS)
 	mux.HandleFunc("/term", webTermServer.HandlePage)
 	mux.HandleFunc("/term/ws", webTermServer.HandleWS)
-	if cfg.WebTermDebugEnabled {
-		slog.Warn("webterm debug endpoint enabled", "path", "/term/debug/open")
-		mux.HandleFunc("/term/debug/open", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodGet {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-				return
-			}
-
-			chatID := int64(1)
-			raw := r.URL.Query().Get("chat_id")
-			if raw != "" {
-				parsed, err := strconv.ParseInt(raw, 10, 64)
-				if err != nil || parsed == 0 {
-					http.Error(w, "invalid chat_id", http.StatusBadRequest)
-					return
-				}
-				chatID = parsed
-			}
-
-			link, err := webTermServer.IssueURL(chatID)
-			if err != nil {
-				http.Error(w, "issue token failed", http.StatusInternalServerError)
-				return
-			}
-
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"chat_id": chatID,
-				"url":     link,
-			})
-		})
-	}
+	mux.HandleFunc("/term/api/ws-token", webTermServer.HandleIssueWSToken)
+	mux.HandleFunc("/term/api/state", webTermServer.HandleDashboardState)
+	mux.HandleFunc("/term/api/auth/session", webTermServer.HandleAuthSession)
+	mux.HandleFunc("/term/api/auth/login", webTermServer.HandleAuthLogin)
+	mux.HandleFunc("/term/api/auth/logout", webTermServer.HandleAuthLogout)
 
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
@@ -139,12 +87,6 @@ func main() {
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
-	if tg != nil {
-		g.Go(func() error {
-			slog.Info("telegram bot started")
-			return tg.Run(gctx)
-		})
-	}
 	g.Go(func() error {
 		slog.Info("http server started", "addr", cfg.ListenAddr)
 		err := httpServer.ListenAndServe()

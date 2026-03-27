@@ -1,0 +1,1381 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSH 控制台</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css">
+  <style>
+    :root {
+      --bg: #07131b;
+      --panel: rgba(10, 26, 36, 0.84);
+      --panel-2: rgba(8, 21, 30, 0.9);
+      --line: rgba(122, 170, 189, 0.28);
+      --text: #d7eff8;
+      --muted: #84acba;
+      --ok: #22c58b;
+      --warn: #f59e0b;
+      --err: #ef5a5a;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(1100px 580px at 100% -20%, rgba(34, 197, 139, 0.14), transparent 55%),
+        radial-gradient(900px 560px at -20% 100%, rgba(14, 165, 233, 0.12), transparent 52%),
+        linear-gradient(165deg, #051018, #081722 44%, #08131d);
+    }
+    .layout {
+      height: 100dvh;
+      display: grid;
+      grid-template-columns: 330px 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+    .sidebar, .main {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(180deg, var(--panel), var(--panel-2));
+      backdrop-filter: blur(8px);
+      overflow: hidden;
+    }
+    .sidebar { display: flex; flex-direction: column; }
+    .block { padding: 12px; border-bottom: 1px solid rgba(122, 170, 189, 0.18); }
+    .sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .title { margin: 0 0 8px; font-size: 15px; font-weight: 700; }
+    .sub { color: var(--muted); font-size: 12px; }
+    .field { display: grid; gap: 5px; margin-top: 8px; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    input {
+      width: 100%; border: 1px solid rgba(122, 170, 189, 0.36); background: rgba(4, 15, 21, 0.9);
+      color: var(--text); border-radius: 8px; padding: 8px 10px; font: 500 12px/1.2 "JetBrains Mono", monospace;
+    }
+    input::placeholder { color: #769fb0; }
+    .btn {
+      border: 1px solid rgba(122, 170, 189, 0.35); background: rgba(11, 37, 46, 0.7); color: var(--text);
+      border-radius: 8px; padding: 8px 10px; font: 700 12px/1 "Manrope", sans-serif; cursor: pointer;
+    }
+    .btn:hover { border-color: rgba(34, 197, 139, 0.55); background: rgba(34, 197, 139, 0.2); }
+    .btn.danger:hover { border-color: rgba(239, 90, 90, 0.5); background: rgba(239, 90, 90, 0.18); }
+    .mobile-toggle-btn { display: none; }
+    #service-list { overflow: auto; padding: 10px; display: grid; gap: 8px; }
+    .svc {
+      border: 1px solid rgba(122, 170, 189, 0.24);
+      border-radius: 10px;
+      padding: 10px;
+      background: rgba(8, 27, 36, 0.7);
+      display: grid;
+      gap: 8px;
+    }
+    .svc-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .svc-name { font-size: 13px; font-weight: 700; }
+    .svc-meta { color: var(--muted); font: 500 11px/1.3 "JetBrains Mono", monospace; }
+    .svc-actions { display: flex; gap: 6px; }
+
+    .main { display: flex; flex-direction: column; }
+    .toolbar { min-height: 52px; padding: 10px 12px; border-bottom: 1px solid rgba(122, 170, 189, 0.18); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .badge { padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .window-tabs {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      overflow-x: auto;
+      border-bottom: 1px solid rgba(122, 170, 189, 0.18);
+      background: rgba(8, 24, 33, 0.68);
+    }
+    .tab-btn {
+      border: 1px solid rgba(122, 170, 189, 0.34);
+      background: rgba(9, 31, 41, 0.72);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font: 700 11px/1 "Manrope", sans-serif;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .tab-btn.active {
+      border-color: rgba(34, 197, 139, 0.65);
+      background: rgba(34, 197, 139, 0.18);
+      color: #e9fcf3;
+    }
+    .tab-close {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 0;
+      background: rgba(6, 18, 25, 0.55);
+      color: #9fc1cd;
+      cursor: pointer;
+      font-size: 11px;
+      line-height: 1;
+      padding: 0;
+    }
+    .tab-close:hover { color: #ffd5d5; background: rgba(239, 90, 90, 0.22); }
+    .window-stage {
+      flex: 1;
+      overflow: auto;
+      padding: 12px;
+      display: flex;
+      align-items: stretch;
+      justify-content: stretch;
+      min-width: 0;
+    }
+    .win {
+      min-height: 280px;
+      border: 1px solid rgba(122, 170, 189, 0.28);
+      border-radius: 12px;
+      overflow: hidden;
+      background: rgba(7, 22, 30, 0.92);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    .win-head {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(122, 170, 189, 0.2);
+      background: rgba(9, 30, 40, 0.78);
+      font-size: 12px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
+    .dot.ok { background: var(--ok); }
+    .dot.err { background: var(--err); }
+    .win-term { flex: 1; min-height: 220px; }
+    .win-term { min-width: 0; }
+    .win-term .xterm,
+    .win-term .xterm-viewport {
+      max-width: 100% !important;
+    }
+    .win-foot {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      bottom: 56px;
+      min-height: 50px;
+      padding: 10px;
+      border: 1px solid rgba(122, 170, 189, 0.24);
+      border-radius: 12px;
+      background: rgba(7, 24, 33, 0.94);
+      display: none;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      z-index: 8;
+    }
+    .win-foot.open { display: flex; }
+    .quick-btn {
+      border: 1px solid rgba(122, 170, 189, 0.32);
+      background: rgba(9, 31, 41, 0.76);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font: 700 12px/1 "Manrope", sans-serif;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .quick-btn:hover {
+      border-color: rgba(34, 197, 139, 0.6);
+      background: rgba(34, 197, 139, 0.2);
+    }
+    .quick-input {
+      min-width: 180px;
+      flex: 1;
+      border: 1px solid rgba(122, 170, 189, 0.36);
+      background: rgba(4, 15, 21, 0.92);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: 500 12px/1.2 "JetBrains Mono", monospace;
+    }
+    .quick-fab {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      border: 1px solid rgba(122, 170, 189, 0.35);
+      background: rgba(9, 31, 41, 0.85);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font: 700 12px/1 "Manrope", sans-serif;
+      cursor: pointer;
+      z-index: 9;
+    }
+    .quick-fab:hover {
+      border-color: rgba(34, 197, 139, 0.6);
+      background: rgba(34, 197, 139, 0.22);
+    }
+    .mini { font-size: 11px; color: var(--muted); }
+    .empty { margin: auto; color: var(--muted); font-size: 13px; }
+    .auth-note { color: #ffcf8b; font-size: 12px; }
+
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 10, 16, 0.72);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 90;
+      padding: 14px;
+    }
+    .modal-mask.open { display: flex; }
+    .modal {
+      width: min(620px, 100%);
+      border: 1px solid rgba(122, 170, 189, 0.38);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(9, 27, 37, 0.97), rgba(8, 19, 28, 0.98));
+      box-shadow: 0 20px 52px rgba(0, 0, 0, 0.46);
+      overflow: hidden;
+    }
+    .modal-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(122, 170, 189, 0.2);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+    .modal-title { margin: 0; font-size: 15px; }
+    .modal-body { padding: 12px 14px 14px; display: grid; gap: 10px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+    .mobile-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(2, 10, 16, 0.58);
+      backdrop-filter: blur(2px);
+      z-index: 100;
+      pointer-events: none;
+    }
+
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+        height: 100dvh;
+        min-height: 100dvh;
+        gap: 6px;
+        padding: 6px;
+      }
+      .sidebar {
+        position: fixed;
+        top: 56px;
+        left: 6px;
+        bottom: 6px;
+        width: min(86vw, 360px);
+        z-index: 120;
+        transform: translateX(-110%);
+        transition: transform 0.18s ease;
+      }
+      body.mobile-sidebar-open .sidebar { transform: translateX(0); }
+      .main {
+        min-height: calc(100dvh - 12px);
+      }
+      .toolbar {
+        min-height: 44px;
+        padding: 8px;
+        position: relative;
+        z-index: 130;
+      }
+      .toolbar .mini { display: none; }
+      .mobile-toggle-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(122, 170, 189, 0.35);
+        background: rgba(9, 31, 41, 0.78);
+        color: var(--text);
+        border-radius: 999px;
+        padding: 6px 10px;
+        font: 700 11px/1 "Manrope", sans-serif;
+        cursor: pointer;
+      }
+      .window-tabs { display: none; }
+      body.mobile-tabs-open .window-tabs {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        position: fixed;
+        top: 56px;
+        right: 6px;
+        bottom: 6px;
+        width: min(82vw, 320px);
+        z-index: 121;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: linear-gradient(180deg, var(--panel), var(--panel-2));
+        padding: 8px;
+      }
+      body.mobile-tabs-open .tab-btn {
+        width: 100%;
+        justify-content: space-between;
+      }
+      body.mobile-sidebar-open .mobile-overlay {
+        display: block;
+        pointer-events: auto;
+      }
+      body.mobile-tabs-open .mobile-overlay {
+        display: none;
+        pointer-events: none;
+      }
+      .window-stage { padding: 6px; }
+      .win { min-height: calc(100dvh - 116px); }
+      .win-term { min-height: 180px; }
+      .win-foot {
+        left: 8px;
+        right: 8px;
+        bottom: 54px;
+      }
+      .quick-fab {
+        right: 10px;
+        bottom: 10px;
+      }
+      .quick-input { min-width: 140px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="mobile-overlay" class="mobile-overlay" aria-hidden="true"></div>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="block">
+        <div class="sidebar-head">
+          <h1 class="title" style="margin:0;">SSH 服务中心</h1>
+          <button id="open-add-service" class="btn" type="button">添加服务</button>
+        </div>
+        <div class="sub" style="margin-top:8px;">左侧显示已保存服务；右侧多窗口横向铺满，自动换行。</div>
+      </div>
+      <div id="service-list"></div>
+    </aside>
+
+    <main class="main">
+      <div class="toolbar">
+        <div>
+          <span id="window-count" class="badge">窗口: 0</span>
+          <span id="service-count" class="badge">服务: 0</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <button id="mobile-open-services" class="mobile-toggle-btn" type="button">服务</button>
+          <button id="mobile-open-windows" class="mobile-toggle-btn" type="button">窗口</button>
+          <div class="mini">WebSocket: <span id="global-state">待连接</span></div>
+          <button id="auth-logout" class="btn" type="button" style="padding:6px 10px;display:none;">退出登录</button>
+        </div>
+      </div>
+      <div id="window-tabs" class="window-tabs"></div>
+      <section id="window-stage" class="window-stage">
+        <div class="empty">先在左侧添加服务，然后点击“新窗口”。</div>
+      </section>
+    </main>
+  </div>
+
+  <div id="add-modal" class="modal-mask" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-modal-title">
+      <div class="modal-head">
+        <h2 id="add-modal-title" class="modal-title">添加 SSH 服务</h2>
+        <button id="close-add-modal" class="btn danger" type="button">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="field"><input id="svc-name" placeholder="服务名，如 prod-app"></div>
+        <div class="field"><input id="svc-port" placeholder="端口，默认 22"></div>
+        <div class="field-row">
+          <div class="field"><input id="svc-user" placeholder="用户，如 root"></div>
+          <div class="field"><input id="svc-host" placeholder="主机，如 10.0.0.5"></div>
+        </div>
+        <div class="field"><input id="svc-pass" type="password" placeholder="SSH 密码（可选）" autocomplete="new-password"></div>
+        <div class="field"><input id="svc-cmd" placeholder="启动命令，留空自动拼 ssh"></div>
+        <div class="modal-actions">
+          <button id="submit-add-service" class="btn" type="button">保存服务</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="auth-modal" class="modal-mask" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <div class="modal-head">
+        <h2 id="auth-modal-title" class="modal-title">控制台登录</h2>
+      </div>
+      <div class="modal-body">
+        <div class="sub">请输入控制台访问密码</div>
+        <div class="field"><input id="auth-password" type="password" placeholder="登录密码" autocomplete="current-password"></div>
+        <div id="auth-error" class="auth-note" style="display:none;"></div>
+        <div class="modal-actions">
+          <button id="auth-submit" class="btn" type="button">登录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+  <script>
+    const STORE_KEY = "webterm_dashboard_state_v1";
+    const PROFILE_KEY = "webterm_dashboard_profile_id_v1";
+    const decoder = new TextDecoder();
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const profileId = getOrCreateProfileID();
+    let syncTimer = null;
+    let syncInFlight = false;
+    let editingServiceId = "";
+    let chatSequence = Date.now() * 1000;
+
+    const state = loadState();
+    const runtime = new Map();
+    let authEnabled = false;
+    let mobileSidebarOpen = false;
+    let mobileTabsOpen = false;
+
+    seedChatSequence();
+
+    const els = {
+      openAdd: document.getElementById("open-add-service"),
+      addModal: document.getElementById("add-modal"),
+      closeAdd: document.getElementById("close-add-modal"),
+      addModalTitle: document.getElementById("add-modal-title"),
+      name: document.getElementById("svc-name"),
+      host: document.getElementById("svc-host"),
+      port: document.getElementById("svc-port"),
+      user: document.getElementById("svc-user"),
+      pass: document.getElementById("svc-pass"),
+      cmd: document.getElementById("svc-cmd"),
+      add: document.getElementById("submit-add-service"),
+      serviceList: document.getElementById("service-list"),
+      tabs: document.getElementById("window-tabs"),
+      stage: document.getElementById("window-stage"),
+      windowCount: document.getElementById("window-count"),
+      serviceCount: document.getElementById("service-count"),
+      globalState: document.getElementById("global-state"),
+      mobileOpenServices: document.getElementById("mobile-open-services"),
+      mobileOpenWindows: document.getElementById("mobile-open-windows"),
+      mobileOverlay: document.getElementById("mobile-overlay"),
+      authLogout: document.getElementById("auth-logout"),
+      authModal: document.getElementById("auth-modal"),
+      authPassword: document.getElementById("auth-password"),
+      authSubmit: document.getElementById("auth-submit"),
+      authError: document.getElementById("auth-error")
+    };
+
+    function loadState() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+        const services = Array.isArray(parsed.services) ? parsed.services : [];
+        const windows = Array.isArray(parsed.windows) ? parsed.windows : [];
+        const normalizedServices = services.map((svc) => ({
+          id: String(svc && svc.id ? svc.id : uid()),
+          name: String((svc && svc.name) || ""),
+          host: String((svc && svc.host) || ""),
+          port: String((svc && svc.port) || "22"),
+          user: String((svc && svc.user) || ""),
+          password: String((svc && svc.password) || ""),
+          command: String((svc && svc.command) || "")
+        }));
+        const normalizedWindows = windows
+          .map((win) => ({
+            id: String((win && win.id) || ""),
+            serviceId: String((win && win.serviceId) || ""),
+            bootstrapped: !!(win && win.bootstrapped),
+            chatId: Number((win && win.chatId) || 0)
+          }))
+          .filter((win) => win.id && win.serviceId);
+        return {
+          services: normalizedServices,
+          windows: normalizedWindows,
+          activeWindowId: typeof parsed.activeWindowId === "string" ? parsed.activeWindowId : ""
+        };
+      } catch (_) {
+        return { services: [], windows: [], activeWindowId: "" };
+      }
+    }
+
+    function getOrCreateProfileID() {
+      const existing = (localStorage.getItem(PROFILE_KEY) || "").trim();
+      if (existing) return existing;
+      const bytes = new Uint8Array(16);
+      if (window.crypto && typeof window.crypto.getRandomValues === "function") {
+        window.crypto.getRandomValues(bytes);
+      } else {
+        for (let i = 0; i < bytes.length; i += 1) {
+          bytes[i] = Math.floor(Math.random() * 256);
+        }
+      }
+      const value = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+      localStorage.setItem(PROFILE_KEY, value);
+      return value;
+    }
+
+    function saveState() {
+      localStorage.setItem(STORE_KEY, JSON.stringify(state));
+      updateCounters();
+      scheduleRemoteSync();
+    }
+
+    function buildPayload() {
+      const services = state.services.map((svc) => ({
+        id: svc.id,
+        name: svc.name || "",
+        host: svc.host || "",
+        port: svc.port || "22",
+        user: svc.user || "",
+        password: svc.password || "",
+        command: svc.command || ""
+      }));
+      const windows = state.windows.map((win) => ({
+        id: win.id,
+        serviceId: win.serviceId,
+        bootstrapped: !!win.bootstrapped,
+        chatId: Number(win.chatId) || 0
+      }));
+      return {
+        services,
+        windows,
+        activeWindowId: state.activeWindowId || ""
+      };
+    }
+
+    function apiURL(path, params) {
+      const url = new URL(location.origin + path);
+      if (params) {
+        for (const [k, v] of Object.entries(params)) {
+          if (v === undefined || v === null || v === "") continue;
+          url.searchParams.set(k, String(v));
+        }
+      }
+      return url.toString();
+    }
+
+    function isMobileLayout() {
+      return window.matchMedia("(max-width: 980px)").matches;
+    }
+
+    function fitActiveTerminal() {
+      const activeID = state.activeWindowId;
+      if (!activeID) return;
+      const rt = runtime.get(activeID);
+      if (!rt || !rt.fit) return;
+      setTimeout(() => {
+        try {
+          rt.fit.fit();
+        } catch (_) {
+        }
+      }, 30);
+    }
+
+    function applyMobilePanelState() {
+      const sidebarOpen = isMobileLayout() && mobileSidebarOpen;
+      const tabsOpen = isMobileLayout() && mobileTabsOpen;
+      document.body.classList.toggle("mobile-sidebar-open", sidebarOpen);
+      document.body.classList.toggle("mobile-tabs-open", tabsOpen);
+    }
+
+    function closeMobilePanels() {
+      mobileSidebarOpen = false;
+      mobileTabsOpen = false;
+      applyMobilePanelState();
+      fitActiveTerminal();
+    }
+
+    function toggleMobileSidebar() {
+      if (!isMobileLayout()) return;
+      mobileSidebarOpen = !mobileSidebarOpen;
+      if (mobileSidebarOpen) {
+        mobileTabsOpen = false;
+      }
+      applyMobilePanelState();
+      fitActiveTerminal();
+    }
+
+    function toggleMobileTabs() {
+      if (!isMobileLayout()) return;
+      mobileTabsOpen = !mobileTabsOpen;
+      if (mobileTabsOpen) {
+        mobileSidebarOpen = false;
+      }
+      applyMobilePanelState();
+      fitActiveTerminal();
+    }
+
+    function setAuthError(text) {
+      if (!text) {
+        els.authError.style.display = "none";
+        els.authError.textContent = "";
+        return;
+      }
+      els.authError.style.display = "block";
+      els.authError.textContent = text;
+    }
+
+    function openAuthModal() {
+      setAuthError("");
+      els.authPassword.value = "";
+      els.authModal.classList.add("open");
+      els.authModal.setAttribute("aria-hidden", "false");
+      setTimeout(() => els.authPassword.focus(), 20);
+    }
+
+    function closeAuthModal() {
+      els.authModal.classList.remove("open");
+      els.authModal.setAttribute("aria-hidden", "true");
+      setAuthError("");
+    }
+
+    async function checkAuthSession() {
+      const resp = await fetch("/term/api/auth/session", { method: "GET" });
+      if (!resp.ok) {
+        return { enabled: false, authenticated: true };
+      }
+      return resp.json();
+    }
+
+    async function loginAuth(password) {
+      const resp = await fetch("/term/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+      });
+      if (!resp.ok) {
+        if (resp.status === 401) {
+          throw new Error("密码错误，请重试");
+        }
+        throw new Error("登录失败: " + resp.status);
+      }
+      return resp.json();
+    }
+
+    async function logoutAuth() {
+      await fetch("/term/api/auth/logout", { method: "POST" });
+      window.location.reload();
+    }
+
+    async function ensureAuthenticated() {
+      let session;
+      try {
+        session = await checkAuthSession();
+      } catch (_) {
+        session = { enabled: false, authenticated: true };
+      }
+      authEnabled = !!session.enabled;
+      els.authLogout.style.display = authEnabled ? "inline-flex" : "none";
+      if (!authEnabled || session.authenticated) {
+        return true;
+      }
+
+      openAuthModal();
+      return new Promise((resolve) => {
+        const submit = async () => {
+          const password = els.authPassword.value;
+          if (!password) {
+            setAuthError("请输入密码");
+            return;
+          }
+          try {
+            els.authSubmit.disabled = true;
+            setAuthError("");
+            await loginAuth(password);
+            closeAuthModal();
+            resolve(true);
+          } catch (err) {
+            setAuthError((err && err.message) || "登录失败");
+          } finally {
+            els.authSubmit.disabled = false;
+          }
+        };
+        els.authSubmit.onclick = submit;
+        els.authPassword.onkeydown = (evt) => {
+          if (evt.key === "Enter") {
+            evt.preventDefault();
+            void submit();
+          }
+        };
+      });
+    }
+
+    async function loadRemoteState() {
+      try {
+        let resp = await fetch(apiURL("/term/api/state", { profile_id: profileId }), { method: "GET" });
+        if (resp.status === 401) {
+          await ensureAuthenticated();
+          resp = await fetch(apiURL("/term/api/state", { profile_id: profileId }), { method: "GET" });
+        }
+        if (!resp.ok) {
+          if (resp.status === 403) {
+            markState("状态存储鉴权失败，使用本地记忆");
+          }
+          return;
+        }
+        const data = await resp.json();
+        const payload = data && data.payload ? data.payload : null;
+        if (!payload) return;
+        if (Array.isArray(payload.services)) state.services = payload.services;
+        if (Array.isArray(payload.windows)) state.windows = payload.windows;
+        if (typeof payload.activeWindowId === "string") state.activeWindowId = payload.activeWindowId;
+        localStorage.setItem(STORE_KEY, JSON.stringify(state));
+      } catch (_) {
+      }
+    }
+
+    function scheduleRemoteSync() {
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        void syncRemoteState();
+      }, 240);
+    }
+
+    async function syncRemoteState() {
+      if (syncInFlight) return;
+      syncInFlight = true;
+      try {
+        let resp = await fetch(apiURL("/term/api/state"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            profile_id: profileId,
+            payload: buildPayload()
+          })
+        });
+        if (resp.status === 401) {
+          await ensureAuthenticated();
+          resp = await fetch(apiURL("/term/api/state"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              profile_id: profileId,
+              payload: buildPayload()
+            })
+          });
+        }
+        if (!resp.ok && resp.status === 403) {
+          markState("状态存储鉴权失败");
+        }
+      } catch (_) {
+      } finally {
+        syncInFlight = false;
+      }
+    }
+
+    function uid() {
+      return Math.random().toString(16).slice(2) + Date.now().toString(16);
+    }
+
+    function generateChatID() {
+      chatSequence += 1;
+      return Number(chatSequence);
+    }
+
+    function seedChatSequence() {
+      for (const win of state.windows) {
+        const n = Number(win && win.chatId);
+        if (Number.isFinite(n) && n > chatSequence) {
+          chatSequence = n;
+        }
+      }
+    }
+
+    function ensureWindowChatID(win) {
+      const existing = Number(win && win.chatId);
+      if (Number.isFinite(existing) && existing !== 0) {
+        return existing;
+      }
+      const id = generateChatID();
+      win.chatId = id;
+      return id;
+    }
+
+    function serviceById(id) {
+      return state.services.find((item) => item.id === id) || null;
+    }
+
+    function composeSSHCommand(service) {
+      const explicit = (service.command || "").trim();
+      if (explicit) return explicit;
+      const host = (service.host || "").trim();
+      const user = (service.user || "").trim();
+      if (!host) return "";
+      const port = Number.parseInt(service.port || "22", 10) || 22;
+      const target = user ? (user + "@" + host) : host;
+      const baseOpts = "-o ConnectTimeout=8 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new";
+      const sshCmd = port === 22
+        ? ("ssh " + baseOpts + " " + target)
+        : ("ssh " + baseOpts + " -p " + port + " " + target);
+      return sshCmd;
+    }
+
+    function serviceMeta(service) {
+      const fields = [];
+      if (service.user) fields.push("user=" + service.user);
+      if (service.host) fields.push("host=" + service.host);
+      if (service.port) fields.push("port=" + service.port);
+      if (service.password) fields.push("password=saved");
+      if (service.command) fields.push("custom-cmd");
+      return fields.join(" | ");
+    }
+
+    function openAddModal() {
+      editingServiceId = "";
+      resetAddForm();
+      els.addModalTitle.textContent = "添加 SSH 服务";
+      els.add.textContent = "保存服务";
+      closeMobilePanels();
+      els.addModal.classList.add("open");
+      els.addModal.setAttribute("aria-hidden", "false");
+      setTimeout(() => els.name.focus(), 20);
+    }
+
+    function openEditModal(service) {
+      editingServiceId = service.id;
+      els.addModalTitle.textContent = "编辑 SSH 服务";
+      els.add.textContent = "保存修改";
+      els.name.value = service.name || "";
+      els.host.value = service.host || "";
+      els.port.value = service.port || "22";
+      els.user.value = service.user || "";
+      els.pass.value = service.password || "";
+      els.cmd.value = service.command || "";
+      els.addModal.classList.add("open");
+      els.addModal.setAttribute("aria-hidden", "false");
+      setTimeout(() => els.name.focus(), 20);
+    }
+
+    function closeAddModal() {
+      els.addModal.classList.remove("open");
+      els.addModal.setAttribute("aria-hidden", "true");
+      editingServiceId = "";
+    }
+
+    function resetAddForm() {
+      els.name.value = "";
+      els.host.value = "";
+      els.port.value = "";
+      els.user.value = "";
+      els.pass.value = "";
+      els.cmd.value = "";
+    }
+
+    async function issueWSToken(chatId) {
+      let resp = await fetch(apiURL("/term/api/ws-token", { chat_id: chatId }), { method: "GET" });
+      if (resp.status === 401) {
+        await ensureAuthenticated();
+        resp = await fetch(apiURL("/term/api/ws-token", { chat_id: chatId }), { method: "GET" });
+      }
+      if (!resp.ok) {
+        throw new Error("申请 WS Token 失败: " + resp.status);
+      }
+      return resp.json();
+    }
+
+    function updateCounters() {
+      els.windowCount.textContent = "窗口: " + state.windows.length;
+      els.serviceCount.textContent = "服务: " + state.services.length;
+    }
+
+    function renderServices() {
+      els.serviceList.innerHTML = "";
+      if (state.services.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "sub";
+        empty.textContent = "暂无服务";
+        els.serviceList.appendChild(empty);
+        updateCounters();
+        return;
+      }
+
+      for (const svc of state.services) {
+        const node = document.createElement("div");
+        node.className = "svc";
+        node.innerHTML =
+          '<div class="svc-head"><div class="svc-name"></div><div class="svc-actions"></div></div>' +
+          '<div class="svc-meta"></div>';
+        node.querySelector(".svc-name").textContent = svc.name || ("service-" + svc.id.slice(0, 6));
+        node.querySelector(".svc-meta").textContent = serviceMeta(svc);
+
+        const actions = node.querySelector(".svc-actions");
+        const openBtn = document.createElement("button");
+        openBtn.className = "btn";
+        openBtn.textContent = "新窗口";
+        openBtn.onclick = () => openWindowForService(svc.id);
+        const editBtn = document.createElement("button");
+        editBtn.className = "btn";
+        editBtn.textContent = "编辑";
+        editBtn.onclick = () => openEditModal(svc);
+        const delBtn = document.createElement("button");
+        delBtn.className = "btn danger";
+        delBtn.textContent = "删除";
+        delBtn.onclick = () => removeService(svc.id);
+        actions.appendChild(openBtn);
+        actions.appendChild(editBtn);
+        actions.appendChild(delBtn);
+        els.serviceList.appendChild(node);
+      }
+      updateCounters();
+    }
+
+    function removeService(serviceId) {
+      state.services = state.services.filter((svc) => svc.id !== serviceId);
+      const closing = state.windows.filter((w) => w.serviceId === serviceId).map((w) => w.id);
+      for (const id of closing) closeWindow(id, false);
+      state.windows = state.windows.filter((w) => w.serviceId !== serviceId);
+      if (!state.windows.some((w) => w.id === state.activeWindowId)) {
+        state.activeWindowId = state.windows.length > 0 ? state.windows[0].id : "";
+      }
+      saveState();
+      renderServices();
+      renderWindows();
+    }
+
+    function openWindowForService(serviceId) {
+      const svc = serviceById(serviceId);
+      if (!svc) return;
+      const winId = uid();
+      state.windows.push({ id: winId, serviceId: svc.id, bootstrapped: false, chatId: generateChatID() });
+      state.activeWindowId = winId;
+      saveState();
+      renderWindows();
+      if (isMobileLayout()) {
+        mobileSidebarOpen = false;
+        applyMobilePanelState();
+      }
+    }
+
+    function disposeRuntime(windowId) {
+      const rt = runtime.get(windowId);
+      if (!rt) return;
+      if (rt.ws) {
+        rt.closing = true;
+        rt.ws.close();
+      }
+      if (rt.reconnectTimer) clearTimeout(rt.reconnectTimer);
+      if (rt.ro) rt.ro.disconnect();
+      if (rt.term) rt.term.dispose();
+      runtime.delete(windowId);
+    }
+
+    function closeWindow(windowId, persist = true) {
+      disposeRuntime(windowId);
+      if (persist) {
+        state.windows = state.windows.filter((w) => w.id !== windowId);
+        if (state.activeWindowId === windowId) {
+          state.activeWindowId = state.windows.length > 0 ? state.windows[0].id : "";
+        }
+        saveState();
+      }
+      renderWindows();
+    }
+
+    function markState(text) {
+      els.globalState.textContent = text;
+    }
+
+    function setActiveWindow(windowId) {
+      if (state.activeWindowId === windowId) return;
+      state.activeWindowId = windowId;
+      saveState();
+      renderWindows();
+      if (isMobileLayout()) {
+        mobileTabsOpen = false;
+        applyMobilePanelState();
+      }
+    }
+
+    function ensureActiveWindow() {
+      if (state.windows.length === 0) {
+        state.activeWindowId = "";
+        return;
+      }
+      if (state.windows.some((w) => w.id === state.activeWindowId)) {
+        return;
+      }
+      state.activeWindowId = state.windows[0].id;
+    }
+
+    function renderWindows() {
+      els.tabs.innerHTML = "";
+      els.stage.innerHTML = "";
+      if (state.windows.length === 0) {
+        if (mobileTabsOpen) {
+          mobileTabsOpen = false;
+          applyMobilePanelState();
+        }
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "暂无窗口";
+        els.stage.appendChild(empty);
+        updateCounters();
+        return;
+      }
+
+      ensureActiveWindow();
+      let repairedWindows = false;
+
+      for (const win of state.windows) {
+        const svc = serviceById(win.serviceId);
+        if (!svc) continue;
+        const before = Number(win.chatId);
+        const chatID = ensureWindowChatID(win);
+        if (!Number.isFinite(before) || before === 0) {
+          repairedWindows = true;
+        }
+        const tab = document.createElement("div");
+        tab.className = "tab-btn" + (win.id === state.activeWindowId ? " active" : "");
+        tab.innerHTML = '<span></span><button class="tab-close" type="button" aria-label="close">x</button>';
+        tab.querySelector("span").textContent = (svc.name || "service") + " · " + chatID;
+        tab.onclick = () => setActiveWindow(win.id);
+        tab.querySelector(".tab-close").onclick = (evt) => {
+          evt.stopPropagation();
+          closeWindow(win.id);
+        };
+        els.tabs.appendChild(tab);
+      }
+
+      const active = state.windows.find((w) => w.id === state.activeWindowId);
+      const activeSvc = active ? serviceById(active.serviceId) : null;
+      if (!active || !activeSvc) {
+        updateCounters();
+        return;
+      }
+      const activeChatID = ensureWindowChatID(active);
+
+      for (const windowId of Array.from(runtime.keys())) {
+        if (windowId !== active.id) {
+          disposeRuntime(windowId);
+        }
+      }
+
+      const card = document.createElement("article");
+      card.className = "win";
+      card.style.width = "100%";
+      card.style.minHeight = "calc(100dvh - 170px)";
+      card.innerHTML =
+        '<div class="win-head"><div style="display:flex;align-items:center;gap:7px"><span class="dot"></span><span></span></div><div style="display:flex;gap:6px"><button class="btn" data-reconnect>重连</button><button class="btn danger" data-close>关闭</button></div></div>' +
+        '<div class="win-term"></div>' +
+        '<div class="win-foot">' +
+          '<input class="quick-input" type="text" placeholder="输入命令后回车或点发送">' +
+          '<button class="quick-btn" type="button" data-send-input>发送</button>' +
+          '<button class="quick-btn" type="button" data-action="ctrl-c">Ctrl+C</button>' +
+          '<button class="quick-btn" type="button" data-action="ctrl-d">Ctrl+D</button>' +
+          '<button class="quick-btn" type="button" data-action="ctrl-l">Ctrl+L</button>' +
+          '<button class="quick-btn" type="button" data-cmd="clear">clear</button>' +
+          '<button class="quick-btn" type="button" data-cmd="ls -lah">ls -lah</button>' +
+          '<button class="quick-btn" type="button" data-cmd="pwd">pwd</button>' +
+        '</div>' +
+        '<button class="quick-fab" type="button" data-quick-toggle>快捷</button>';
+
+      const label = card.querySelector(".win-head span:last-child");
+      label.textContent = (activeSvc.name || "service") + " · chat_id=" + activeChatID;
+      const termWrap = card.querySelector(".win-term");
+      const quickBar = card.querySelector(".win-foot");
+      const quickInput = card.querySelector(".quick-input");
+      const quickToggle = card.querySelector("[data-quick-toggle]");
+      els.stage.appendChild(card);
+
+      card.querySelector("[data-close]").onclick = () => closeWindow(active.id);
+      card.querySelector("[data-reconnect]").onclick = () => connectWindow(active, activeSvc, activeChatID, card, true, termWrap);
+      if (quickToggle && quickBar) {
+        quickToggle.addEventListener("click", () => {
+          const open = quickBar.classList.toggle("open");
+          quickToggle.textContent = open ? "收起" : "快捷";
+          if (open && quickInput) {
+            setTimeout(() => quickInput.focus(), 30);
+          }
+        });
+      }
+      if (quickBar) {
+        quickBar.addEventListener("click", (evt) => {
+          const btn = evt.target.closest("button");
+          if (!btn) return;
+          const rt = runtime.get(active.id);
+          if (!rt || !rt.ws || rt.ws.readyState !== WebSocket.OPEN) {
+            markState("未连接");
+            return;
+          }
+          const action = String(btn.getAttribute("data-action") || "");
+          if (action === "ctrl-c") {
+            rt.ws.send("\u0003");
+            return;
+          }
+          if (action === "ctrl-d") {
+            rt.ws.send("\u0004");
+            return;
+          }
+          if (action === "ctrl-l") {
+            rt.ws.send("\u000c");
+            return;
+          }
+          if (btn.hasAttribute("data-send-input")) {
+            const inputEl = card.querySelector(".quick-input");
+            const command = String(inputEl && inputEl.value ? inputEl.value : "").trim();
+            if (!command) return;
+            rt.ws.send(command + "\r");
+            inputEl.value = "";
+            return;
+          }
+          const cmd = String(btn.getAttribute("data-cmd") || "").trim();
+          if (cmd) {
+            rt.ws.send(cmd + "\r");
+          }
+        });
+      }
+      if (quickInput) {
+        quickInput.addEventListener("keydown", (evt) => {
+          if (evt.key !== "Enter") return;
+          evt.preventDefault();
+          const rt = runtime.get(active.id);
+          if (!rt || !rt.ws || rt.ws.readyState !== WebSocket.OPEN) {
+            markState("未连接");
+            return;
+          }
+          const command = String(quickInput.value || "").trim();
+          if (!command) return;
+          rt.ws.send(command + "\r");
+          quickInput.value = "";
+        });
+      }
+      connectWindow(active, activeSvc, activeChatID, card, false, termWrap);
+
+      if (repairedWindows) {
+        saveState();
+      }
+
+      updateCounters();
+    }
+
+    async function connectWindow(win, svc, chatID, card, forceReconnect, termWrap) {
+      const old = runtime.get(win.id);
+      if (old && old.reconnectTimer) clearTimeout(old.reconnectTimer);
+      if (old && old.ws) {
+        old.closing = true;
+        old.ws.close();
+      }
+      if (old && old.ro) old.ro.disconnect();
+      if (old && old.term) old.term.dispose();
+
+      const mount = termWrap || card.querySelector(".win-term");
+      if (!mount) return;
+      mount.innerHTML = "";
+
+      const term = new Terminal({
+        cursorBlink: true,
+        convertEol: true,
+        fontSize: 13,
+        lineHeight: 1.2,
+        fontFamily: '"JetBrains Mono", Menlo, Monaco, monospace',
+        theme: {
+          background: "#07131b",
+          foreground: "#d7eff8",
+          cursor: "#b6f4ff",
+          green: "#22c58b",
+          red: "#ef5a5a",
+          yellow: "#f5bf42"
+        }
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open(mount);
+      fit.fit();
+
+      const dot = card.querySelector(".dot");
+      const rt = {
+        term,
+        fit,
+        ws: null,
+        reconnectTimer: null,
+        retry: 0,
+        closing: false,
+        bootstrapped: !!win.bootstrapped,
+        ro: null,
+        bootCmd: "",
+        hideBootEcho: false,
+        suppressNoiseUntil: 0,
+        autoPassword: String(svc.password || ""),
+        passwordSent: false,
+        waitingPasswordPrompt: false
+      };
+      runtime.set(win.id, rt);
+
+      term.onData((data) => {
+        if (rt.ws && rt.ws.readyState === WebSocket.OPEN) {
+          rt.ws.send(data);
+        }
+      });
+
+      if (window.ResizeObserver) {
+        rt.ro = new ResizeObserver(() => {
+          try { rt.fit.fit(); } catch (_) { return; }
+          if (rt.ws && rt.ws.readyState === WebSocket.OPEN) {
+            rt.ws.send(JSON.stringify({ type: "resize", cols: rt.term.cols, rows: rt.term.rows }));
+          }
+        });
+        rt.ro.observe(mount);
+      }
+
+      async function openSocket() {
+        try {
+          markState("连接中");
+          dot.className = "dot";
+          const tokenResp = await issueWSToken(chatID);
+          const ws = new WebSocket(proto + "://" + location.host + tokenResp.ws_url);
+          ws.binaryType = "arraybuffer";
+          rt.ws = ws;
+
+          ws.onopen = () => {
+            rt.retry = 0;
+            markState("在线");
+            dot.className = "dot ok";
+            try { rt.fit.fit(); } catch (_) {}
+            ws.send(JSON.stringify({ type: "resize", cols: rt.term.cols, rows: rt.term.rows }));
+            const bootCmd = composeSSHCommand(svc);
+            if (bootCmd && (!rt.bootstrapped || forceReconnect)) {
+              rt.bootCmd = bootCmd;
+              rt.hideBootEcho = true;
+              rt.suppressNoiseUntil = Date.now() + 12000;
+              rt.passwordSent = false;
+              rt.waitingPasswordPrompt = !!rt.autoPassword;
+              ws.send(JSON.stringify({ type: "input", data: bootCmd + "\r" }));
+              rt.bootstrapped = true;
+              win.bootstrapped = true;
+              saveState();
+            }
+          };
+
+          ws.onmessage = async (evt) => {
+            let chunk = "";
+            if (typeof evt.data === "string") chunk = evt.data;
+            else if (evt.data instanceof ArrayBuffer) chunk = decoder.decode(new Uint8Array(evt.data), { stream: true });
+            else if (evt.data && typeof evt.data.arrayBuffer === "function") {
+              const buf = await evt.data.arrayBuffer();
+              chunk = decoder.decode(new Uint8Array(buf), { stream: true });
+            }
+            if (chunk && rt.hideBootEcho && rt.bootCmd) {
+              chunk = chunk.replaceAll(rt.bootCmd + "\r\n", "");
+              chunk = chunk.replaceAll(rt.bootCmd + "\n", "");
+              chunk = chunk.replaceAll(rt.bootCmd, "");
+              rt.hideBootEcho = false;
+            }
+            if (chunk && rt.suppressNoiseUntil > Date.now()) {
+              chunk = chunk.replace(/(?:^|\r?\n)[^\r\n]*\bssh\b[^\r\n]*\r?\n?/g, "");
+              chunk = chunk.replace(/(?:^|\r?\n)root@[^\r\n]*password[:：]\s*/gi, "");
+              chunk = chunk.replace(/(?:^|\r?\n)Last failed login:[^\r\n]*\r?\n?/g, "");
+              chunk = chunk.replace(/(?:^|\r?\n)There (?:was|were) [^\r\n]* failed login attempt[^\r\n]*\r?\n?/g, "");
+              chunk = chunk.replace(/(?:^|\r?\n)Last login:[^\r\n]*\r?\n?/g, "");
+            }
+            if (chunk) rt.term.write(chunk);
+            if (
+              rt.ws &&
+              rt.ws.readyState === WebSocket.OPEN &&
+              rt.waitingPasswordPrompt &&
+              rt.autoPassword &&
+              !rt.passwordSent &&
+              /password[:：]\s*$/i.test(chunk)
+            ) {
+              rt.ws.send(JSON.stringify({ type: "input", data: rt.autoPassword + "\r" }));
+              rt.passwordSent = true;
+              rt.waitingPasswordPrompt = false;
+            }
+            if (rt.waitingPasswordPrompt && /[#$>]\s*$/.test(chunk)) {
+              rt.waitingPasswordPrompt = false;
+              rt.suppressNoiseUntil = Date.now();
+            }
+          };
+
+          ws.onclose = () => {
+            if (rt.closing) return;
+            dot.className = "dot err";
+            rt.retry += 1;
+            markState("断开，重连中");
+            const delay = Math.min(1000 * rt.retry, 5000);
+            rt.reconnectTimer = setTimeout(openSocket, delay);
+          };
+
+          ws.onerror = () => {
+            dot.className = "dot err";
+            markState("连接错误");
+          };
+        } catch (err) {
+          dot.className = "dot err";
+          markState(err.message || "连接失败");
+        }
+      }
+
+      openSocket();
+    }
+
+    els.openAdd.addEventListener("click", openAddModal);
+    els.mobileOpenServices.addEventListener("click", toggleMobileSidebar);
+    els.mobileOpenWindows.addEventListener("click", toggleMobileTabs);
+    els.mobileOverlay.addEventListener("click", closeMobilePanels);
+    els.closeAdd.addEventListener("click", closeAddModal);
+    els.addModal.addEventListener("click", (evt) => {
+      if (evt.target === els.addModal) closeAddModal();
+    });
+    window.addEventListener("resize", () => {
+      if (!isMobileLayout()) {
+        mobileSidebarOpen = false;
+        mobileTabsOpen = false;
+      }
+      applyMobilePanelState();
+      fitActiveTerminal();
+    });
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape" && els.addModal.classList.contains("open")) {
+        closeAddModal();
+        return;
+      }
+      if (evt.key === "Escape" && (mobileSidebarOpen || mobileTabsOpen)) {
+        closeMobilePanels();
+      }
+    });
+
+    els.add.addEventListener("click", () => {
+      const name = els.name.value.trim();
+      const service = {
+        id: editingServiceId || uid(),
+        name,
+        host: els.host.value.trim(),
+        port: els.port.value.trim() || "22",
+        user: els.user.value.trim(),
+        password: els.pass.value,
+        command: els.cmd.value.trim()
+      };
+      if (editingServiceId) {
+        state.services = state.services.map((item) => item.id === editingServiceId ? service : item);
+      } else {
+        state.services.push(service);
+      }
+      resetAddForm();
+      closeAddModal();
+      saveState();
+      renderServices();
+      renderWindows();
+    });
+
+    els.authLogout.addEventListener("click", () => {
+      void logoutAuth();
+    });
+
+    async function init() {
+      applyMobilePanelState();
+      await ensureAuthenticated();
+      renderServices();
+      renderWindows();
+      await loadRemoteState();
+      renderServices();
+      renderWindows();
+    }
+
+    init();
+  </script>
+</body>
+</html>

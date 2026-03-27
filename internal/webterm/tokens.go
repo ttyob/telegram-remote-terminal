@@ -9,6 +9,7 @@ import (
 
 type tokenEntry struct {
 	chatID    int64
+	agentID   string
 	expiresAt time.Time
 	used      bool
 	wsToken   string
@@ -45,7 +46,7 @@ func (s *TokenStore) Issue(chatID int64) (string, error) {
 	return token, nil
 }
 
-func (s *TokenStore) IssueWSToken(chatID int64) (string, time.Time, error) {
+func (s *TokenStore) IssueWSToken(chatID int64, agentID string) (string, time.Time, error) {
 	wsToken, err := newToken()
 	if err != nil {
 		return "", time.Time{}, err
@@ -53,7 +54,7 @@ func (s *TokenStore) IssueWSToken(chatID int64) (string, time.Time, error) {
 	expiresAt := time.Now().Add(s.ttl)
 
 	s.mu.Lock()
-	s.wsTokens[wsToken] = tokenEntry{chatID: chatID, expiresAt: expiresAt}
+	s.wsTokens[wsToken] = tokenEntry{chatID: chatID, agentID: agentID, expiresAt: expiresAt}
 	s.mu.Unlock()
 
 	return wsToken, expiresAt, nil
@@ -87,12 +88,12 @@ func (s *TokenStore) UsePageToken(token string) (string, int64, bool) {
 	entry.used = true
 	entry.wsToken = wsToken
 	s.pageTokens[token] = entry
-	s.wsTokens[wsToken] = tokenEntry{chatID: entry.chatID, expiresAt: entry.expiresAt}
+	s.wsTokens[wsToken] = tokenEntry{chatID: entry.chatID, agentID: entry.agentID, expiresAt: entry.expiresAt}
 
 	return wsToken, entry.chatID, true
 }
 
-func (s *TokenStore) ResolveWSToken(token string) (int64, bool) {
+func (s *TokenStore) ResolveWSToken(token string) (int64, string, bool) {
 	now := time.Now()
 
 	s.mu.Lock()
@@ -100,13 +101,13 @@ func (s *TokenStore) ResolveWSToken(token string) (int64, bool) {
 
 	entry, ok := s.wsTokens[token]
 	if !ok {
-		return 0, false
+		return 0, "", false
 	}
 	if now.After(entry.expiresAt) {
 		delete(s.wsTokens, token)
-		return 0, false
+		return 0, "", false
 	}
-	return entry.chatID, true
+	return entry.chatID, entry.agentID, true
 }
 
 func newToken() (string, error) {

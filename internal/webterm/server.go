@@ -5,13 +5,16 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
 
+	"terminal-bridge/internal/agent"
 	"terminal-bridge/internal/events"
 	"terminal-bridge/internal/terminal"
 )
@@ -20,11 +23,12 @@ import (
 var staticFS embed.FS
 
 type Config struct {
-	Bus     *events.Bus
-	Manager *terminal.Manager
-	Tokens  *TokenStore
-	Store   *DashboardStateStore
-	Auth    *ConsoleAuth
+	Bus      *events.Bus
+	Manager  *terminal.Manager
+	Tokens   *TokenStore
+	Store    *DashboardStateStore
+	Auth     *ConsoleAuth
+	AgentHub *agent.Hub
 }
 
 type Server struct {
@@ -33,6 +37,7 @@ type Server struct {
 	tokens   *TokenStore
 	store    *DashboardStateStore
 	auth     *ConsoleAuth
+	agentHub *agent.Hub
 	upgrader websocket.Upgrader
 }
 
@@ -45,11 +50,12 @@ type clientMessage struct {
 
 func NewServer(cfg Config) *Server {
 	return &Server{
-		bus:     cfg.Bus,
-		manager: cfg.Manager,
-		tokens:  cfg.Tokens,
-		store:   cfg.Store,
-		auth:    cfg.Auth,
+		bus:      cfg.Bus,
+		manager:  cfg.Manager,
+		tokens:   cfg.Tokens,
+		store:    cfg.Store,
+		auth:     cfg.Auth,
+		agentHub: cfg.AgentHub,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -92,6 +98,77 @@ func (s *Server) HandleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	s.auth.HandleLogout(w, r)
 }
 
+func (s *Server) HandleGateways(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "dashboard state store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.requireConsoleAuth(w, r) {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		online := map[string]struct{}{}
+		if s.agentHub != nil {
+			online = s.agentHub.OnlineSet()
+		}
+		items, err := s.store.ListGateways(online)
+		if err != nil {
+			http.Error(w, "list gateways failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+	case http.MethodPost:
+		var req struct {
+			AgentID string `json:"agent_id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		agentID, token, err := s.store.CreateGateway(req.AgentID)
+		if err != nil {
+			http.Error(w, "create gateway failed", http.StatusBadRequest)
+			return
+		}
+		command := s.buildInstallCommand(r, agentID, token)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"agent_id": agentID, "token": token, "install_command": command})
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) HandleGatewayInstallCommand(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		http.Error(w, "dashboard state store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.requireConsoleAuth(w, r) {
+		return
+	}
+	agentID := normalizeAgentID(r.URL.Query().Get("agent_id"))
+	if agentID == "" {
+		http.Error(w, "agent_id required", http.StatusBadRequest)
+		return
+	}
+	token, ok, err := s.store.GetGatewayToken(agentID)
+	if err != nil {
+		http.Error(w, "read gateway failed", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "gateway not found", http.StatusNotFound)
+		return
+	}
+	cmd := s.buildInstallCommand(r, agentID, token)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{"agent_id": agentID, "install_command": cmd})
+}
+
 func (s *Server) HandleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -122,8 +199,23 @@ func (s *Server) HandleIssueWSToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid chat_id", http.StatusBadRequest)
 		return
 	}
+	agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	if agentID != "" {
+		if s.agentHub == nil || !s.agentHub.Enabled() {
+			http.Error(w, "agent gateway disabled", http.StatusBadRequest)
+			return
+		}
+		if _, ok, err := s.store.GetGatewayToken(agentID); err != nil || !ok {
+			http.Error(w, "gateway not found", http.StatusBadRequest)
+			return
+		}
+		if !s.agentHub.HasAgent(agentID) {
+			http.Error(w, "agent offline", http.StatusServiceUnavailable)
+			return
+		}
+	}
 
-	wsToken, expiresAt, err := s.tokens.IssueWSToken(chatID)
+	wsToken, expiresAt, err := s.tokens.IssueWSToken(chatID, agentID)
 	if err != nil {
 		http.Error(w, "issue token failed", http.StatusInternalServerError)
 		return
@@ -132,10 +224,32 @@ func (s *Server) HandleIssueWSToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"chat_id":    chatID,
+		"agent_id":   agentID,
 		"ws_token":   wsToken,
 		"ws_url":     "/term/ws?token=" + wsToken,
 		"expires_at": expiresAt.Format(time.RFC3339),
 	})
+}
+
+func (s *Server) buildInstallCommand(r *http.Request, agentID, token string) string {
+	host := strings.TrimSpace(r.Host)
+	if xf := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); xf != "" {
+		host = xf
+	}
+	https := r.TLS != nil
+	if xfProto := strings.TrimSpace(strings.ToLower(r.Header.Get("X-Forwarded-Proto"))); xfProto != "" {
+		https = xfProto == "https"
+	}
+	httpScheme := "http"
+	wsScheme := "ws"
+	if https {
+		httpScheme = "https"
+		wsScheme = "wss"
+	}
+	installURL := (&url.URL{Scheme: httpScheme, Host: host, Path: "/install-agent.sh"}).String()
+	wsURL := (&url.URL{Scheme: wsScheme, Host: host, Path: "/agent/ws"}).String()
+	httpBase := (&url.URL{Scheme: httpScheme, Host: host}).String()
+	return fmt.Sprintf("curl -fsSL %s | AGENT_ID=%s AGENT_TOKEN=%s AGENT_SERVER_URL=%s AGENT_HTTP_BASE=%s bash", installURL, agentID, token, wsURL, httpBase)
 }
 
 func (s *Server) HandleDashboardState(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +427,7 @@ func (s *Server) HandlePage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	chatID, ok := s.tokens.ResolveWSToken(token)
+	chatID, agentID, ok := s.tokens.ResolveWSToken(token)
 	if !ok {
 		http.Error(w, "invalid or expired token", http.StatusForbidden)
 		return
@@ -330,6 +444,17 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	eventCh, unsubscribe := s.bus.Subscribe(chatID)
 	defer unsubscribe()
+	if agentID != "" {
+		if s.agentHub == nil || !s.agentHub.Enabled() {
+			http.Error(w, "agent gateway disabled", http.StatusBadRequest)
+			return
+		}
+		if err := s.agentHub.Open(agentID, chatID); err != nil {
+			http.Error(w, fmt.Sprintf("agent open failed: %v", err), http.StatusServiceUnavailable)
+			return
+		}
+		defer s.agentHub.Close(agentID, chatID)
+	}
 	history := s.bus.Snapshot(chatID)
 	for _, evt := range history {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
@@ -359,19 +484,31 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 					switch strings.ToLower(strings.TrimSpace(msg.Type)) {
 					case "resize":
 						if msg.Cols > 0 && msg.Rows > 0 {
-							_ = s.manager.Resize(chatID, msg.Cols, msg.Rows, terminal.CommandMeta{Source: "webterm"})
+							if agentID != "" {
+								_ = s.agentHub.Resize(agentID, chatID, msg.Cols, msg.Rows)
+							} else {
+								_ = s.manager.Resize(chatID, msg.Cols, msg.Rows, terminal.CommandMeta{Source: "webterm"})
+							}
 						}
 						continue
 					case "input":
 						if msg.Data != "" {
-							_ = s.manager.SendInteractiveInput(chatID, msg.Data, false, terminal.CommandMeta{Source: "webterm"})
+							if agentID != "" {
+								_ = s.agentHub.Input(agentID, chatID, msg.Data)
+							} else {
+								_ = s.manager.SendInteractiveInput(chatID, msg.Data, false, terminal.CommandMeta{Source: "webterm"})
+							}
 						}
 						continue
 					}
 				}
 			}
 
-			_ = s.manager.SendInteractiveInput(chatID, string(payload), false, terminal.CommandMeta{Source: "webterm"})
+			if agentID != "" {
+				_ = s.agentHub.Input(agentID, chatID, string(payload))
+			} else {
+				_ = s.manager.SendInteractiveInput(chatID, string(payload), false, terminal.CommandMeta{Source: "webterm"})
+			}
 		}
 	}()
 

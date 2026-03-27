@@ -6,12 +6,15 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
+	"terminal-bridge/internal/agent"
 	"terminal-bridge/internal/audit"
 	"terminal-bridge/internal/config"
 	"terminal-bridge/internal/events"
@@ -59,12 +62,22 @@ func main() {
 	defer dashboardStore.Close()
 	consoleAuth := webterm.NewConsoleAuth(cfg.ConsoleAuthPasswordHash, cfg.ConsoleAuthSessionTTL)
 	webTermTokens := webterm.NewTokenStore(cfg.WebTermTokenTTL)
+	agentHub := agent.NewHub(bus,
+		func(agentID, token string) (bool, error) {
+			return dashboardStore.ValidateGatewayToken(agentID, token)
+		},
+		func(agentID string) {
+			_ = dashboardStore.TouchGatewaySeen(agentID)
+		},
+		nil,
+	)
 	webTermServer := webterm.NewServer(webterm.Config{
-		Bus:     bus,
-		Manager: mgr,
-		Tokens:  webTermTokens,
-		Store:   dashboardStore,
-		Auth:    consoleAuth,
+		Bus:      bus,
+		Manager:  mgr,
+		Tokens:   webTermTokens,
+		Store:    dashboardStore,
+		Auth:     consoleAuth,
+		AgentHub: agentHub,
 	})
 
 	mux := http.NewServeMux()
@@ -77,9 +90,69 @@ func main() {
 	mux.HandleFunc("/term/ws", webTermServer.HandleWS)
 	mux.HandleFunc("/term/api/ws-token", webTermServer.HandleIssueWSToken)
 	mux.HandleFunc("/term/api/state", webTermServer.HandleDashboardState)
+	mux.HandleFunc("/term/api/gateways", webTermServer.HandleGateways)
+	mux.HandleFunc("/term/api/gateways/install", webTermServer.HandleGatewayInstallCommand)
 	mux.HandleFunc("/term/api/auth/session", webTermServer.HandleAuthSession)
 	mux.HandleFunc("/term/api/auth/login", webTermServer.HandleAuthLogin)
 	mux.HandleFunc("/term/api/auth/logout", webTermServer.HandleAuthLogout)
+	mux.HandleFunc("/install-agent.sh", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		content, err := os.ReadFile("scripts/install-agent.sh")
+		if err != nil {
+			http.Error(w, "script not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write(content)
+	})
+	mux.HandleFunc("/agent/download", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		goos := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("os")))
+		goarch := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("arch")))
+		if goos == "" {
+			goos = "linux"
+		}
+		if goarch == "" {
+			goarch = "amd64"
+		}
+		if goos != "linux" || (goarch != "amd64" && goarch != "arm64") {
+			http.Error(w, "unsupported target", http.StatusBadRequest)
+			return
+		}
+		tmpFile, err := os.CreateTemp("", "terminal-bridge-agent-*")
+		if err != nil {
+			http.Error(w, "create temp failed", http.StatusInternalServerError)
+			return
+		}
+		binPath := tmpFile.Name()
+		_ = tmpFile.Close()
+		defer os.Remove(binPath)
+
+		cmd := exec.Command("go", "build", "-o", binPath, "./cmd/agent")
+		cmd.Env = append(os.Environ(), "GOWORK=off", "CGO_ENABLED=0", "GOOS="+goos, "GOARCH="+goarch)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			slog.Error("build agent binary failed", "error", err, "output", string(out))
+			http.Error(w, "build agent failed", http.StatusInternalServerError)
+			return
+		}
+		content, err := os.ReadFile(binPath)
+		if err != nil {
+			http.Error(w, "read binary failed", http.StatusInternalServerError)
+			return
+		}
+		fileName := "terminal-bridge-agent-" + goos + "-" + goarch
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", "attachment; filename="+fileName)
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(content)
+	})
+	mux.HandleFunc("/agent/ws", agentHub.HandleWS)
 
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,

@@ -4,6 +4,7 @@
 
 - Web 控制台（首页 `/`）
 - WebTerm 临时 token 机制（`/term/api/ws-token` -> `/term/ws`）
+- 反向网关 Agent（`/agent/ws`，用于内网主机中转）
 - 多会话隔离（按 `chat_id`）
 - 审计日志（JSONL）
 
@@ -62,6 +63,9 @@ DOCKER_GOSUMDB=sum.golang.google.cn
 - `GET /healthz`：健康检查
 - `GET|POST /term/api/ws-token?chat_id=<id>`：申请 WebTerm WS token（需已登录控制台）
 - `GET /term/ws?token=<ws_token>`：WebTerm 终端连接
+- `GET /agent/ws?agent_id=<id>&token=<token>`：网关 Agent 长连接入口
+- `GET|POST /term/api/gateways`：网关列表/创建（创建时随机生成 token）
+- `GET /term/api/gateways/install?agent_id=<id>`：获取一键安装命令
 - `GET|POST /term/api/state`：仪表盘状态读写（需已登录控制台）
 - `GET|POST /term/api/auth/*`：控制台登录会话相关接口
 
@@ -76,6 +80,25 @@ DOCKER_GOSUMDB=sum.golang.google.cn
 - 审计日志：`AUDIT_LOG_PATH`
 - 控制台登录：`CONSOLE_AUTH_PASSWORD_HASH`、`CONSOLE_AUTH_SESSION_TTL`
 - 状态存储：`DASHBOARD_DB_PATH`、`DASHBOARD_ENCRYPTION_KEY`
+
+## 网关 Agent 部署
+
+1) 公网服务先在控制台创建“未上线网关”，系统会随机生成 token。
+
+2) 在网关列表点击“复制安装命令”，到家里 Linux 主机执行：
+
+```bash
+curl -fsSL https://your-domain/install-agent.sh | \
+  AGENT_ID=home-gw \
+  AGENT_TOKEN=replace_with_long_random_token \
+  AGENT_SERVER_URL=wss://your-domain/agent/ws \
+  AGENT_HTTP_BASE=https://your-domain \
+  bash
+```
+
+3) Agent 上线后，控制台添加服务时，在“网关 ID”填写该 ID 即可走中转。
+
+说明：安装脚本会拉取仓库并构建 `cmd/agent`，随后创建 systemd 服务 `terminal-bridge-agent`。
 
 ## 安全建议（重要）
 
@@ -93,6 +116,7 @@ DOCKER_GOSUMDB=sum.golang.google.cn
 1. WebSocket `CheckOrigin` 为全放行，跨站环境需结合反向代理策略
 2. 交互输入路径（WebTerm 输入）不走前缀白名单校验
 3. 未配置 `DASHBOARD_ENCRYPTION_KEY` 时，状态数据明文存储在 SQLite
+4. Agent token 泄露会导致对应网关可被接入，需定期轮换
 
 建议：
 

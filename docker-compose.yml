@@ -3,6 +3,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GOPROXY: ${DOCKER_GOPROXY:-https://goproxy.cn,direct}
+        GOSUMDB: ${DOCKER_GOSUMDB:-sum.golang.google.cn}
     container_name: terminal-bridge
     restart: unless-stopped
     env_file:

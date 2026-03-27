@@ -57,6 +57,20 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+若构建阶段出现 `go mod download` 超时（例如无法访问 `proxy.golang.org`），可在 `.env` 中设置：
+
+```text
+DOCKER_GOPROXY=https://goproxy.cn,direct
+DOCKER_GOSUMDB=sum.golang.google.cn
+```
+
+然后重新构建：
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
 4. 健康检查：
 
 ```bash

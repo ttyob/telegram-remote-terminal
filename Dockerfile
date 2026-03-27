@@ -2,17 +2,18 @@ FROM golang:1.25-bookworm AS builder
 
 WORKDIR /app
 
+ARG GOPROXY=https://goproxy.cn,direct
+ARG GOSUMDB=sum.golang.google.cn
+ENV GOPROXY=${GOPROXY}
+ENV GOSUMDB=${GOSUMDB}
+
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/bridge ./cmd/bridge
 
-FROM debian:bookworm-slim
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM golang:1.25-bookworm AS runtime
 
 WORKDIR /app
 

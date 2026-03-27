@@ -326,6 +326,7 @@
     let reconnectAttempt = 0;
     let closedByServer = false;
     let inAltScreen = false;
+    const wsTextDecoder = new TextDecoder();
 
     const setStatus = (text, cls) => {
       statusText.textContent = text;
@@ -444,6 +445,7 @@
 
     const connect = () => {
       ws = new WebSocket(wsURL);
+      ws.binaryType = "arraybuffer";
       setStatus("Connecting...", "");
       setWSState("connecting");
       setRetryInfo();
@@ -478,9 +480,19 @@
         setWSState("error");
       };
 
-      ws.onmessage = (evt) => {
-        trackScreenMode(evt.data);
-        term.write(evt.data);
+      ws.onmessage = async (evt) => {
+        let chunk = "";
+        if (typeof evt.data === "string") {
+          chunk = evt.data;
+        } else if (evt.data instanceof ArrayBuffer) {
+          chunk = wsTextDecoder.decode(new Uint8Array(evt.data), { stream: true });
+        } else if (evt.data && typeof evt.data.arrayBuffer === "function") {
+          const buffer = await evt.data.arrayBuffer();
+          chunk = wsTextDecoder.decode(new Uint8Array(buffer), { stream: true });
+        }
+        if (!chunk) return;
+        trackScreenMode(chunk);
+        term.write(chunk);
       };
     };
 

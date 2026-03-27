@@ -106,7 +106,7 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	history := s.bus.Snapshot(chatID)
 	for _, evt := range history {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if err := conn.WriteMessage(websocket.TextMessage, []byte(evt.Data)); err != nil {
+		if err := conn.WriteMessage(websocket.BinaryMessage, []byte(evt.Data)); err != nil {
 			return
 		}
 	}
@@ -157,7 +157,7 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, []byte(evt.Data)); err != nil {
+			if err := conn.WriteMessage(websocket.BinaryMessage, []byte(evt.Data)); err != nil {
 				return
 			}
 		}

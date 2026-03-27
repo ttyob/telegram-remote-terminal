@@ -64,7 +64,7 @@ DOCKER_GOSUMDB=sum.golang.google.cn
 - `GET|POST /term/api/ws-token?chat_id=<id>`：申请 WebTerm WS token（需已登录控制台）
 - `GET /term/ws?token=<ws_token>`：WebTerm 终端连接
 - `GET /agent/ws?agent_id=<id>&token=<token>`：网关 Agent 长连接入口
-- `GET|POST /term/api/gateways`：网关列表/创建（创建时随机生成 token）
+- `GET|POST|PUT|DELETE /term/api/gateways`：网关列表/创建/改名/删除
 - `GET /term/api/gateways/install?agent_id=<id>`：获取一键安装命令
 - `GET|POST /term/api/state`：仪表盘状态读写（需已登录控制台）
 - `GET|POST /term/api/auth/*`：控制台登录会话相关接口
@@ -96,7 +96,9 @@ curl -fsSL https://your-domain/install-agent.sh | \
   bash
 ```
 
-3) Agent 上线后，控制台添加服务时，在“网关 ID”填写该 ID 即可走中转。
+3) Agent 上线后，控制台添加服务时，在“网关”下拉框选择该网关即可走中转。
+
+4) 网关管理支持改名、删除；删除时会尝试在线下发卸载指令到 agent。
 
 说明：安装脚本会拉取仓库并构建 `cmd/agent`，随后创建 systemd 服务 `terminal-bridge-agent`。
 

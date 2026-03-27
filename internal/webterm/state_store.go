@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ type DashboardStateStore struct {
 
 type GatewayRecord struct {
 	AgentID    string    `json:"agent_id"`
+	Name       string    `json:"name"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	LastSeenAt time.Time `json:"last_seen_at"`
@@ -58,12 +60,17 @@ CREATE TABLE IF NOT EXISTS dashboard_state (
 	if _, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS gateway_agent (
   agent_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
   token_cipher TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL DEFAULT ''
 );
 `); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if _, err := db.Exec(`ALTER TABLE gateway_agent ADD COLUMN name TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		_ = db.Close()
 		return nil, err
 	}
@@ -107,10 +114,17 @@ func (s *DashboardStateStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *DashboardStateStore) CreateGateway(agentID string) (string, string, error) {
+func (s *DashboardStateStore) CreateGateway(agentID, name string) (string, string, error) {
 	agentID = normalizeAgentID(agentID)
 	if agentID == "" {
 		agentID = "gw-" + randomHex(6)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = agentID
+	}
+	if len(name) > 64 {
+		name = name[:64]
 	}
 	token := randomHex(24)
 	cipher, err := s.codec.Encrypt(token)
@@ -118,9 +132,9 @@ func (s *DashboardStateStore) CreateGateway(agentID string) (string, string, err
 		return "", "", err
 	}
 	_, err = s.db.Exec(`
-INSERT INTO gateway_agent(agent_id, token_cipher, created_at, updated_at, last_seen_at)
-VALUES (?, ?, datetime('now'), datetime('now'), '')
-`, agentID, cipher)
+INSERT INTO gateway_agent(agent_id, name, token_cipher, created_at, updated_at, last_seen_at)
+VALUES (?, ?, ?, datetime('now'), datetime('now'), '')
+`, agentID, name, cipher)
 	if err != nil {
 		return "", "", err
 	}
@@ -129,7 +143,7 @@ VALUES (?, ?, datetime('now'), datetime('now'), '')
 
 func (s *DashboardStateStore) ListGateways(online map[string]struct{}) ([]GatewayRecord, error) {
 	rows, err := s.db.Query(`
-SELECT agent_id, created_at, updated_at, last_seen_at
+SELECT agent_id, name, created_at, updated_at, last_seen_at
 FROM gateway_agent
 ORDER BY created_at DESC
 `)
@@ -140,11 +154,14 @@ ORDER BY created_at DESC
 
 	out := make([]GatewayRecord, 0)
 	for rows.Next() {
-		var id, createdRaw, updatedRaw, seenRaw string
-		if err := rows.Scan(&id, &createdRaw, &updatedRaw, &seenRaw); err != nil {
+		var id, name, createdRaw, updatedRaw, seenRaw string
+		if err := rows.Scan(&id, &name, &createdRaw, &updatedRaw, &seenRaw); err != nil {
 			return nil, err
 		}
-		rec := GatewayRecord{AgentID: id, Online: hasOnline(online, id)}
+		rec := GatewayRecord{AgentID: id, Name: strings.TrimSpace(name), Online: hasOnline(online, id)}
+		if rec.Name == "" {
+			rec.Name = id
+		}
 		rec.CreatedAt = parseSQLiteTime(createdRaw)
 		rec.UpdatedAt = parseSQLiteTime(updatedRaw)
 		rec.LastSeenAt = parseSQLiteTime(seenRaw)
@@ -154,6 +171,51 @@ ORDER BY created_at DESC
 		return nil, err
 	}
 	return out, nil
+}
+
+func (s *DashboardStateStore) RenameGateway(agentID, name string) error {
+	agentID = normalizeAgentID(agentID)
+	if agentID == "" {
+		return errors.New("agent_id required")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("name required")
+	}
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	res, err := s.db.Exec(`UPDATE gateway_agent SET name=?, updated_at=datetime('now') WHERE agent_id = ?`, name, agentID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("gateway not found")
+	}
+	return nil
+}
+
+func (s *DashboardStateStore) DeleteGateway(agentID string) error {
+	agentID = normalizeAgentID(agentID)
+	if agentID == "" {
+		return errors.New("agent_id required")
+	}
+	res, err := s.db.Exec(`DELETE FROM gateway_agent WHERE agent_id = ?`, agentID)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("gateway not found")
+	}
+	return nil
 }
 
 func (s *DashboardStateStore) GetGatewayToken(agentID string) (string, bool, error) {

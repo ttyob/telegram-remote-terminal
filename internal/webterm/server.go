@@ -123,9 +123,10 @@ func (s *Server) HandleGateways(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req struct {
 			AgentID string `json:"agent_id"`
+			Name    string `json:"name"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		agentID, token, err := s.store.CreateGateway(req.AgentID)
+		agentID, token, err := s.store.CreateGateway(req.AgentID, req.Name)
 		if err != nil {
 			http.Error(w, "create gateway failed", http.StatusBadRequest)
 			return
@@ -133,6 +134,39 @@ func (s *Server) HandleGateways(w http.ResponseWriter, r *http.Request) {
 		command := s.buildInstallCommand(r, agentID, token)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{"agent_id": agentID, "token": token, "install_command": command})
+	case http.MethodPut:
+		var req struct {
+			AgentID string `json:"agent_id"`
+			Name    string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json body", http.StatusBadRequest)
+			return
+		}
+		if err := s.store.RenameGateway(req.AgentID, req.Name); err != nil {
+			http.Error(w, "rename gateway failed", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	case http.MethodDelete:
+		agentID := normalizeAgentID(r.URL.Query().Get("agent_id"))
+		if agentID == "" {
+			http.Error(w, "agent_id required", http.StatusBadRequest)
+			return
+		}
+		uninstalled := false
+		if s.agentHub != nil && s.agentHub.HasAgent(agentID) {
+			if err := s.agentHub.Uninstall(agentID); err == nil {
+				uninstalled = true
+			}
+		}
+		if err := s.store.DeleteGateway(agentID); err != nil {
+			http.Error(w, "delete gateway failed", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "agent_id": agentID, "uninstalled": uninstalled})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -249,7 +283,7 @@ func (s *Server) buildInstallCommand(r *http.Request, agentID, token string) str
 	installURL := (&url.URL{Scheme: httpScheme, Host: host, Path: "/install-agent.sh"}).String()
 	wsURL := (&url.URL{Scheme: wsScheme, Host: host, Path: "/agent/ws"}).String()
 	httpBase := (&url.URL{Scheme: httpScheme, Host: host}).String()
-	return fmt.Sprintf("curl -fsSL %s | AGENT_ID=%s AGENT_TOKEN=%s AGENT_SERVER_URL=%s AGENT_HTTP_BASE=%s bash", installURL, agentID, token, wsURL, httpBase)
+	return fmt.Sprintf("curl --noproxy '*' -fsSL '%s' | AGENT_ID=%s AGENT_TOKEN=%s AGENT_SERVER_URL='%s' AGENT_HTTP_BASE='%s' AGENT_CURL_NOPROXY='*' bash", installURL, agentID, token, wsURL, httpBase)
 }
 
 func (s *Server) HandleDashboardState(w http.ResponseWriter, r *http.Request) {
@@ -482,6 +516,10 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 				var msg clientMessage
 				if err := json.Unmarshal([]byte(trimmed), &msg); err == nil {
 					switch strings.ToLower(strings.TrimSpace(msg.Type)) {
+					case "ping":
+						_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+						_ = conn.WriteJSON(map[string]any{"type": "pong", "ts": time.Now().UnixMilli(), "echo": msg.Data})
+						continue
 					case "resize":
 						if msg.Cols > 0 && msg.Rows > 0 {
 							if agentID != "" {

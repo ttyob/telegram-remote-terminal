@@ -204,6 +204,20 @@ func (h *Hub) Resize(agentID string, chatID int64, cols, rows int) error {
 	return ac.send(message{Type: "resize", ChatID: chatID, Cols: cols, Rows: rows})
 }
 
+func (h *Hub) Uninstall(agentID string) error {
+	ac, err := h.get(agentID)
+	if err != nil {
+		return err
+	}
+	ac.mu.Lock()
+	defer ac.mu.Unlock()
+	if err := ac.send(message{Type: "uninstall"}); err != nil {
+		return err
+	}
+	_ = ac.conn.Close()
+	return nil
+}
+
 func (h *Hub) get(agentID string) (*agentConn, error) {
 	h.mu.RLock()
 	ac, ok := h.agents[agentID]

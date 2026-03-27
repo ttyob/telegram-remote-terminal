@@ -51,7 +51,7 @@
     .sub { color: var(--muted); font-size: 12px; }
     .field { display: grid; gap: 5px; margin-top: 8px; }
     .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    input {
+    input, select {
       width: 100%; border: 1px solid rgba(122, 170, 189, 0.36); background: rgba(4, 15, 21, 0.9);
       color: var(--text); border-radius: 8px; padding: 8px 10px; font: 500 12px/1.2 "JetBrains Mono", monospace;
     }
@@ -170,6 +170,15 @@
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); }
     .dot.ok { background: var(--ok); }
     .dot.err { background: var(--err); }
+    .latency-pill {
+      font: 700 11px/1 "JetBrains Mono", monospace;
+      color: var(--muted);
+      border: 1px solid rgba(122, 170, 189, 0.28);
+      border-radius: 999px;
+      padding: 4px 8px;
+      min-width: 74px;
+      text-align: center;
+    }
     .win-term { flex: 1; min-height: 220px; }
     .win-term { min-width: 0; }
     .win-term .xterm,
@@ -419,7 +428,11 @@
           <div class="field"><input id="svc-user" placeholder="用户，如 root"></div>
           <div class="field"><input id="svc-host" placeholder="主机，如 10.0.0.5"></div>
         </div>
-        <div class="field"><input id="svc-agent" placeholder="网关 ID（可选，如 home-gw）"></div>
+        <div class="field">
+          <select id="svc-agent">
+            <option value="">本地直连（不走网关）</option>
+          </select>
+        </div>
         <div class="field"><input id="svc-pass" type="password" placeholder="SSH 密码（可选）" autocomplete="new-password"></div>
         <div class="field"><input id="svc-cmd" placeholder="启动命令，留空自动拼 ssh"></div>
         <div class="modal-actions">
@@ -460,6 +473,7 @@
 
     const state = loadState();
     const runtime = new Map();
+    let gatewayItems = [];
     let authEnabled = false;
     let mobileSidebarOpen = false;
     let mobileTabsOpen = false;
@@ -603,22 +617,54 @@
       return day + "d";
     }
 
-    async function createGateway(agentId) {
+    async function createGateway(agentId, name) {
       let resp = await fetch(apiURL("/term/api/gateways"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id: agentId || "" })
+        body: JSON.stringify({ agent_id: agentId || "", name: name || "" })
       });
       if (resp.status === 401) {
         await ensureAuthenticated();
         resp = await fetch(apiURL("/term/api/gateways"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agent_id: agentId || "" })
+          body: JSON.stringify({ agent_id: agentId || "", name: name || "" })
         });
       }
       if (!resp.ok) {
         throw new Error("创建网关失败: " + resp.status);
+      }
+      return resp.json();
+    }
+
+    async function renameGateway(agentId, name) {
+      let resp = await fetch(apiURL("/term/api/gateways"), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id: agentId, name })
+      });
+      if (resp.status === 401) {
+        await ensureAuthenticated();
+        resp = await fetch(apiURL("/term/api/gateways"), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agent_id: agentId, name })
+        });
+      }
+      if (!resp.ok) {
+        throw new Error("修改网关名称失败: " + resp.status);
+      }
+      return resp.json();
+    }
+
+    async function deleteGateway(agentId) {
+      let resp = await fetch(apiURL("/term/api/gateways", { agent_id: agentId }), { method: "DELETE" });
+      if (resp.status === 401) {
+        await ensureAuthenticated();
+        resp = await fetch(apiURL("/term/api/gateways", { agent_id: agentId }), { method: "DELETE" });
+      }
+      if (!resp.ok) {
+        throw new Error("删除网关失败: " + resp.status);
       }
       return resp.json();
     }
@@ -655,9 +701,28 @@
       window.prompt("请复制以下命令", text);
     }
 
+    function renderGatewaySelectOptions(selected) {
+      const current = String(selected || "");
+      els.agent.innerHTML = "";
+      const localOpt = document.createElement("option");
+      localOpt.value = "";
+      localOpt.textContent = "本地直连（不走网关）";
+      els.agent.appendChild(localOpt);
+      for (const gw of gatewayItems) {
+        const opt = document.createElement("option");
+        opt.value = gw.agent_id || "";
+        const online = gw.online ? "在线" : "离线";
+        opt.textContent = (gw.name || gw.agent_id || "gw") + " [" + online + "]";
+        els.agent.appendChild(opt);
+      }
+      els.agent.value = current;
+    }
+
     function renderGateways(items) {
       els.gatewayList.innerHTML = "";
       const list = Array.isArray(items) ? items : [];
+      gatewayItems = list;
+      renderGatewaySelectOptions(els.agent.value || "");
       if (list.length === 0) {
         const empty = document.createElement("div");
         empty.className = "sub";
@@ -671,8 +736,8 @@
         node.innerHTML =
           '<div class="gw-head"><div class="gw-name"></div><span class="gw-status"></span></div>' +
           '<div class="gw-meta"></div>' +
-          '<div class="gw-actions"><button class="btn" data-copy>复制安装命令</button><button class="btn" data-newsvc>新建服务绑定</button></div>';
-        node.querySelector(".gw-name").textContent = gw.agent_id || "gw";
+          '<div class="gw-actions"><button class="btn" data-copy>复制安装命令</button><button class="btn" data-newsvc>新建服务绑定</button><button class="btn" data-rename>改名</button><button class="btn danger" data-delete>删除</button></div>';
+        node.querySelector(".gw-name").textContent = (gw.name || gw.agent_id || "gw") + " · " + (gw.agent_id || "");
         const status = node.querySelector(".gw-status");
         const online = !!gw.online;
         status.textContent = online ? "在线" : "未上线";
@@ -691,6 +756,35 @@
         node.querySelector("[data-newsvc]").onclick = () => {
           openAddModal();
           els.agent.value = gw.agent_id || "";
+        };
+        node.querySelector("[data-rename]").onclick = async () => {
+          const nextName = window.prompt("输入新网关名称", gw.name || gw.agent_id || "");
+          if (nextName === null) return;
+          const trimmed = nextName.trim();
+          if (!trimmed) return;
+          try {
+            await renameGateway(gw.agent_id, trimmed);
+            await refreshGateways();
+            markState("网关名称已更新");
+          } catch (err) {
+            markState((err && err.message) || "改名失败");
+          }
+        };
+        node.querySelector("[data-delete]").onclick = async () => {
+          if (!window.confirm("确认删除网关并同步卸载 agent？\n" + (gw.name || gw.agent_id || ""))) {
+            return;
+          }
+          try {
+            const result = await deleteGateway(gw.agent_id);
+            state.services = state.services.map((svc) => (svc.agentId === gw.agent_id ? { ...svc, agentId: "" } : svc));
+            saveState();
+            renderServices();
+            renderWindows();
+            await refreshGateways();
+            markState(result && result.uninstalled ? "网关已删除并已下发卸载" : "网关已删除");
+          } catch (err) {
+            markState((err && err.message) || "删除失败");
+          }
         };
         els.gatewayList.appendChild(node);
       }
@@ -975,6 +1069,7 @@
     function openAddModal() {
       editingServiceId = "";
       resetAddForm();
+      renderGatewaySelectOptions("");
       els.addModalTitle.textContent = "添加 SSH 服务";
       els.add.textContent = "保存服务";
       closeMobilePanels();
@@ -991,7 +1086,7 @@
       els.host.value = service.host || "";
       els.port.value = service.port || "22";
       els.user.value = service.user || "";
-      els.agent.value = service.agentId || "";
+      renderGatewaySelectOptions(service.agentId || "");
       els.pass.value = service.password || "";
       els.cmd.value = service.command || "";
       els.addModal.classList.add("open");
@@ -1010,7 +1105,7 @@
       els.host.value = "";
       els.port.value = "";
       els.user.value = "";
-      els.agent.value = "";
+      renderGatewaySelectOptions("");
       els.pass.value = "";
       els.cmd.value = "";
     }
@@ -1108,6 +1203,7 @@
         rt.ws.close();
       }
       if (rt.reconnectTimer) clearTimeout(rt.reconnectTimer);
+      if (rt.pingTimer) clearInterval(rt.pingTimer);
       if (rt.ro) rt.ro.disconnect();
       if (rt.term) rt.term.dispose();
       runtime.delete(windowId);
@@ -1209,7 +1305,7 @@
       card.style.width = "100%";
       card.style.minHeight = "calc(100dvh - 170px)";
       card.innerHTML =
-        '<div class="win-head"><div style="display:flex;align-items:center;gap:7px"><span class="dot"></span><span></span></div><div style="display:flex;gap:6px"><button class="btn" data-reconnect>重连</button><button class="btn danger" data-close>关闭</button></div></div>' +
+        '<div class="win-head"><div style="display:flex;align-items:center;gap:7px"><span class="dot"></span><span data-title></span></div><div style="display:flex;gap:6px;align-items:center;"><span class="latency-pill" data-latency>-- ms</span><button class="btn" data-reconnect>重连</button><button class="btn danger" data-close>关闭</button></div></div>' +
         '<div class="win-term"></div>' +
         '<div class="win-foot">' +
           '<input class="quick-input" type="text" placeholder="输入命令后回车或点发送">' +
@@ -1223,8 +1319,9 @@
         '</div>' +
         '<button class="quick-fab" type="button" data-quick-toggle>快捷</button>';
 
-      const label = card.querySelector(".win-head span:last-child");
+      const label = card.querySelector(".win-head [data-title]");
       label.textContent = (activeSvc.name || "service") + " · chat_id=" + activeChatID;
+      const latencyEl = card.querySelector("[data-latency]");
       const termWrap = card.querySelector(".win-term");
       const quickBar = card.querySelector(".win-foot");
       const quickInput = card.querySelector(".quick-input");
@@ -1232,7 +1329,7 @@
       els.stage.appendChild(card);
 
       card.querySelector("[data-close]").onclick = () => closeWindow(active.id);
-      card.querySelector("[data-reconnect]").onclick = () => connectWindow(active, activeSvc, activeChatID, card, true, termWrap);
+      card.querySelector("[data-reconnect]").onclick = () => connectWindow(active, activeSvc, activeChatID, card, true, termWrap, latencyEl);
       if (quickToggle && quickBar) {
         quickToggle.addEventListener("click", () => {
           const open = quickBar.classList.toggle("open");
@@ -1293,7 +1390,7 @@
           quickInput.value = "";
         });
       }
-      connectWindow(active, activeSvc, activeChatID, card, false, termWrap);
+      connectWindow(active, activeSvc, activeChatID, card, false, termWrap, latencyEl);
 
       if (repairedWindows) {
         saveState();
@@ -1302,7 +1399,7 @@
       updateCounters();
     }
 
-    async function connectWindow(win, svc, chatID, card, forceReconnect, termWrap) {
+    async function connectWindow(win, svc, chatID, card, forceReconnect, termWrap, latencyEl) {
       const old = runtime.get(win.id);
       if (old && old.reconnectTimer) clearTimeout(old.reconnectTimer);
       if (old && old.ws) {
@@ -1351,7 +1448,9 @@
         suppressNoiseUntil: 0,
         autoPassword: String(svc.password || ""),
         passwordSent: false,
-        waitingPasswordPrompt: false
+        waitingPasswordPrompt: false,
+        pingTimer: null,
+        pingSentAt: 0
       };
       runtime.set(win.id, rt);
 
@@ -1385,6 +1484,15 @@
             markState("在线");
             dot.className = "dot ok";
             try { rt.fit.fit(); } catch (_) {}
+            if (latencyEl) latencyEl.textContent = "-- ms";
+            const probeLatency = () => {
+              if (!rt.ws || rt.ws.readyState !== WebSocket.OPEN) return;
+              rt.pingSentAt = Date.now();
+              rt.ws.send(JSON.stringify({ type: "ping", data: String(rt.pingSentAt) }));
+            };
+            probeLatency();
+            if (rt.pingTimer) clearInterval(rt.pingTimer);
+            rt.pingTimer = setInterval(probeLatency, 5000);
             ws.send(JSON.stringify({ type: "resize", cols: rt.term.cols, rows: rt.term.rows }));
             const bootCmd = composeSSHCommand(svc);
             if (bootCmd && (!rt.bootstrapped || forceReconnect)) {
@@ -1402,7 +1510,24 @@
 
           ws.onmessage = async (evt) => {
             let chunk = "";
-            if (typeof evt.data === "string") chunk = evt.data;
+            if (typeof evt.data === "string") {
+              const raw = evt.data;
+              let parsed = null;
+              try {
+                parsed = JSON.parse(raw);
+              } catch (_) {
+                parsed = null;
+              }
+              if (parsed && String(parsed.type || "").toLowerCase() === "pong") {
+                const sent = Number(parsed.echo || rt.pingSentAt || 0);
+                if (latencyEl && Number.isFinite(sent) && sent > 0) {
+                  const ms = Math.max(1, Date.now() - sent);
+                  latencyEl.textContent = ms + " ms";
+                }
+                return;
+              }
+              chunk = raw;
+            }
             else if (evt.data instanceof ArrayBuffer) chunk = decoder.decode(new Uint8Array(evt.data), { stream: true });
             else if (evt.data && typeof evt.data.arrayBuffer === "function") {
               const buf = await evt.data.arrayBuffer();
@@ -1443,6 +1568,11 @@
           ws.onclose = () => {
             if (rt.closing) return;
             dot.className = "dot err";
+            if (rt.pingTimer) {
+              clearInterval(rt.pingTimer);
+              rt.pingTimer = null;
+            }
+            if (latencyEl) latencyEl.textContent = "-- ms";
             rt.retry += 1;
             markState("断开，重连中");
             const delay = Math.min(1000 * rt.retry, 5000);
@@ -1451,6 +1581,7 @@
 
           ws.onerror = () => {
             dot.className = "dot err";
+            if (latencyEl) latencyEl.textContent = "-- ms";
             markState("连接错误");
           };
         } catch (err) {
@@ -1464,10 +1595,12 @@
 
     els.openAdd.addEventListener("click", openAddModal);
     els.createGateway.addEventListener("click", async () => {
-      const raw = window.prompt("输入网关 ID（留空自动生成）", "");
-      if (raw === null) return;
+      const nameRaw = window.prompt("输入网关名称（可修改）", "家庭网关");
+      if (nameRaw === null) return;
+      const idRaw = window.prompt("输入网关 ID（留空自动生成）", "");
+      if (idRaw === null) return;
       try {
-        const created = await createGateway(raw.trim());
+        const created = await createGateway(idRaw.trim(), nameRaw.trim());
         await refreshGateways();
         if (created && created.install_command) {
           await copyText(created.install_command);

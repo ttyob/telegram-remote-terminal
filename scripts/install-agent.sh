@@ -12,6 +12,7 @@ AGENT_SERVER_URL="${AGENT_SERVER_URL:-}"
 AGENT_HTTP_BASE="${AGENT_HTTP_BASE:-}"
 AGENT_SHELL="${AGENT_SHELL:-/bin/bash}"
 AGENT_WORKDIR="${AGENT_WORKDIR:-.}"
+AGENT_CURL_NOPROXY="${AGENT_CURL_NOPROXY:-*}"
 
 BIN_PATH="/usr/local/bin/terminal-bridge-agent"
 SERVICE_PATH="/etc/systemd/system/terminal-bridge-agent.service"
@@ -48,7 +49,7 @@ esac
 DOWNLOAD_URL="${AGENT_HTTP_BASE%/}/agent/download?os=linux&arch=${AGENT_ARCH}"
 
 echo "Downloading agent binary from ${DOWNLOAD_URL} ..."
-curl -fsSL "${DOWNLOAD_URL}" -o "${BIN_PATH}"
+curl --noproxy "${AGENT_CURL_NOPROXY}" -fsSL "${DOWNLOAD_URL}" -o "${BIN_PATH}"
 chmod +x "${BIN_PATH}"
 
 cat >"${ENV_PATH}" <<EOF

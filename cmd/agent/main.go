@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -184,8 +185,18 @@ func runOnce(ctx context.Context, c cfg) error {
 				continue
 			}
 			_ = item.session.Resize(msg.Cols, msg.Rows)
+		case "uninstall":
+			_ = send(message{Type: "status", ChatID: 0, Data: "[agent uninstall requested]\n"})
+			go uninstallSelf()
+			return errors.New("agent uninstall requested")
 		}
 	}
+}
+
+func uninstallSelf() {
+	cmd := exec.Command("/bin/sh", "-c", "systemctl disable --now terminal-bridge-agent >/dev/null 2>&1 || true; rm -f /etc/terminal-bridge-agent.env /etc/systemd/system/terminal-bridge-agent.service; systemctl daemon-reload >/dev/null 2>&1 || true; (sleep 1; rm -f /usr/local/bin/terminal-bridge-agent) >/dev/null 2>&1 &")
+	_ = cmd.Run()
+	os.Exit(0)
 }
 
 func load() (cfg, error) {

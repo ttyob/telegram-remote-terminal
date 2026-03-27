@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+logs/
+tmp/
+node_modules/
+*.log
+*.out
+*.swp

@@ -1,0 +1,18 @@
+services:
+  terminal-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: terminal-bridge
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LISTEN_ADDR: ":8083"
+      TERMINAL_WORKDIR: "/workspace"
+      SHELL_PATH: "/bin/bash"
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./logs:/app/logs
+      - ./:/workspace

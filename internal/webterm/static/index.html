@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Remote Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css">
+  <style>
+    :root {
+      --bg: #071319;
+      --bg-soft: rgba(13, 30, 38, 0.72);
+      --border: rgba(114, 167, 180, 0.25);
+      --text: #d7f1f7;
+      --muted: #8cb7c2;
+      --warn: #f59e0b;
+      --ok: #22c58b;
+      --err: #ef5a5a;
+      --panel-shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+      background:
+        radial-gradient(1200px 600px at 85% -10%, rgba(34, 197, 139, 0.18), transparent 55%),
+        radial-gradient(900px 500px at -10% 110%, rgba(14, 165, 233, 0.16), transparent 52%),
+        linear-gradient(160deg, #051016 0%, #08171f 45%, #0a1b23 100%);
+      color: var(--text);
+    }
+    body {
+      font-family: "Manrope", "Segoe UI", "Helvetica Neue", sans-serif;
+      padding: 12px;
+      box-sizing: border-box;
+    }
+    .app {
+      min-height: calc(100vh - 24px);
+      height: calc(100dvh - 24px);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: linear-gradient(180deg, rgba(9, 24, 31, 0.76), rgba(6, 18, 23, 0.78));
+      backdrop-filter: blur(8px);
+      box-shadow: var(--panel-shadow);
+      overflow: hidden;
+    }
+    .status {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      font: 12px/1.2 "Manrope", "Segoe UI", sans-serif;
+      background: var(--bg-soft);
+      border-bottom: 1px solid rgba(114, 167, 180, 0.2);
+      gap: 10px;
+      box-sizing: border-box;
+      flex-wrap: wrap;
+    }
+    #status-text { letter-spacing: 0.01em; font-weight: 700; }
+    .status-main { display: flex; align-items: center; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: 0 0 auto; }
+    .status.ok .dot { background: var(--ok); }
+    .status.err .dot { background: var(--err); }
+    .status-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      border: 1px solid var(--border);
+      background: rgba(11, 37, 46, 0.65);
+      border-radius: 999px;
+      padding: 4px 9px;
+      line-height: 1.1;
+      white-space: nowrap;
+      color: var(--muted);
+    }
+    button.chip {
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+    }
+    button.chip:hover {
+      color: #ebfbff;
+      background: rgba(34, 197, 139, 0.18);
+      border-color: rgba(34, 197, 139, 0.45);
+    }
+    button.chip:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      background: rgba(11, 37, 46, 0.42);
+      border-color: rgba(114, 167, 180, 0.2);
+      color: #7fa9b4;
+    }
+    #term {
+      flex: 1;
+      width: 100%;
+      padding: 0;
+      box-sizing: border-box;
+      touch-action: manipulation;
+      overflow: hidden;
+      background:
+        linear-gradient(0deg, rgba(5, 22, 28, 0.78), rgba(5, 22, 28, 0.78)),
+        radial-gradient(1200px 300px at 50% -10%, rgba(14, 165, 233, 0.05), transparent 60%);
+    }
+    #term .xterm,
+    #term .xterm-screen,
+    #term .xterm-viewport {
+      width: 100% !important;
+    }
+    #term .xterm-screen { left: 0 !important; }
+    .mobile-tools {
+      border-top: 1px solid rgba(114, 167, 180, 0.2);
+      background: rgba(7, 24, 31, 0.9);
+      padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tools-fab {
+      position: fixed;
+      right: 14px;
+      bottom: calc(14px + env(safe-area-inset-bottom));
+      z-index: 60;
+      border: 1px solid rgba(114, 167, 180, 0.4);
+      background: rgba(11, 37, 46, 0.92);
+      color: var(--text);
+      border-radius: 999px;
+      min-width: 96px;
+      min-height: 38px;
+      padding: 0 12px;
+      font: 700 12px/1.1 "Manrope", "Segoe UI", sans-serif;
+      letter-spacing: 0.02em;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
+      display: none;
+      touch-action: manipulation;
+    }
+    .tool-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .tool-btn {
+      border: 1px solid rgba(114, 167, 180, 0.35);
+      background: rgba(11, 37, 46, 0.7);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 6px;
+      font: 600 12px/1.1 "Manrope", "Segoe UI", sans-serif;
+      letter-spacing: 0.01em;
+      min-height: 34px;
+      touch-action: manipulation;
+    }
+    .tool-btn:active {
+      transform: translateY(1px);
+      background: rgba(34, 197, 139, 0.2);
+      border-color: rgba(34, 197, 139, 0.5);
+    }
+    .cmd-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 6px;
+      align-items: center;
+    }
+    #cmd-input {
+      width: 100%;
+      border: 1px solid rgba(114, 167, 180, 0.35);
+      background: rgba(4, 18, 24, 0.8);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font: 500 13px/1.25 "JetBrains Mono", Menlo, Monaco, monospace;
+      outline: none;
+      box-sizing: border-box;
+    }
+    #cmd-input::placeholder { color: #76a8b4; }
+    #cmd-input:focus {
+      border-color: rgba(34, 197, 139, 0.65);
+      box-shadow: 0 0 0 3px rgba(34, 197, 139, 0.18);
+    }
+    @media (max-width: 768px) {
+      body { padding: 0; }
+      .app {
+        min-height: 100vh;
+        height: 100dvh;
+        border-radius: 0;
+        border-left: 0;
+        border-right: 0;
+      }
+      .status { font-size: 11px; padding: 8px 10px; }
+      .chip { padding: 3px 7px; }
+      #term { padding: 0; }
+      .tool-btn { min-height: 36px; font-size: 12px; }
+      .cmd-row { grid-template-columns: 1fr auto; }
+      .cmd-row .tool-btn[data-action="send"] { display: none; }
+      .mobile-tools {
+        position: fixed;
+        left: 8px;
+        right: 8px;
+        bottom: calc(62px + env(safe-area-inset-bottom));
+        border-radius: 12px;
+        border: 1px solid rgba(114, 167, 180, 0.28);
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45);
+        display: none;
+        max-height: 46vh;
+        overflow: auto;
+        z-index: 50;
+      }
+      .mobile-tools.open { display: flex; }
+      .tools-fab { display: inline-flex; align-items: center; justify-content: center; }
+    }
+    @media (min-width: 769px) {
+      .mobile-tools {
+        padding: 10px 12px;
+      }
+      .tool-row {
+        grid-template-columns: repeat(8, minmax(0, 1fr));
+      }
+      .tools-fab { display: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div id="status" class="status">
+      <div class="status-main"><span class="dot"></span><span id="status-text">Connecting...</span></div>
+      <div class="status-meta">
+        <span id="ws-state" class="chip">WS: connecting</span>
+        <span id="size-info" class="chip">Size: -- x --</span>
+        <span id="retry-info" class="chip">Retries: 0</span>
+        <button id="font-dec" class="chip" type="button">A-</button>
+        <span id="font-size-info" class="chip">Font: 14</span>
+        <button id="font-inc" class="chip" type="button">A+</button>
+        <button id="reset-view" class="chip" type="button">Reset View</button>
+      </div>
+    </div>
+    <div id="term"></div>
+    <div class="mobile-tools">
+      <div class="tool-row">
+        <button class="tool-btn" data-key="enter">Enter</button>
+        <button class="tool-btn" data-key="ctrlc">Ctrl+C</button>
+        <button class="tool-btn" data-key="ctrld">Ctrl+D</button>
+        <button class="tool-btn" data-key="tab">Tab</button>
+        <button class="tool-btn" data-key="up">Up</button>
+        <button class="tool-btn" data-key="down">Down</button>
+        <button class="tool-btn" id="focus-term">Focus</button>
+        <button class="tool-btn" id="clear-view">Clear</button>
+      </div>
+      <div class="cmd-row">
+        <input id="cmd-input" type="text" placeholder="Type command here..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button class="tool-btn" data-action="send">Send</button>
+        <button class="tool-btn" data-action="run">Run</button>
+      </div>
+    </div>
+    <button id="tools-toggle" class="tools-fab" type="button">Tools</button>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit/lib/xterm-addon-fit.js"></script>
+  <script>
+    const FONT_SIZE_KEY = "webterm_font_size";
+    const MIN_FONT_SIZE = 11;
+    const MAX_FONT_SIZE = 22;
+    const DEFAULT_FONT_SIZE = 14;
+    const loadFontSize = () => {
+      const raw = Number(localStorage.getItem(FONT_SIZE_KEY));
+      if (!Number.isFinite(raw)) return DEFAULT_FONT_SIZE;
+      return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(raw)));
+    };
+    let currentFontSize = loadFontSize();
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: currentFontSize,
+      convertEol: true,
+      rendererType: "dom",
+      fontFamily: '"JetBrains Mono", "Fira Code", Menlo, Monaco, monospace',
+      lineHeight: 1.22,
+      theme: {
+        background: "#071319",
+        foreground: "#d7f1f7",
+        cursor: "#b6f4ff",
+        cursorAccent: "#071319",
+        selectionBackground: "rgba(34, 197, 139, 0.22)",
+        black: "#0f2b33",
+        brightBlack: "#31515c",
+        red: "#ef5a5a",
+        brightRed: "#ff7e7e",
+        green: "#22c58b",
+        brightGreen: "#58dfad",
+        yellow: "#f5bf42",
+        brightYellow: "#ffd978",
+        blue: "#34a3d8",
+        brightBlue: "#66c4f0",
+        magenta: "#63a5c0",
+        brightMagenta: "#90c5d9",
+        cyan: "#2fc7b5",
+        brightCyan: "#70ebdc",
+        white: "#cce8ef",
+        brightWhite: "#f2fdff"
+      }
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById("term"));
+    fitAddon.fit();
+
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const wsURL = proto + "://" + location.host + "__TERM_WS_URL__";
+    const status = document.getElementById("status");
+    const statusText = document.getElementById("status-text");
+    const wsState = document.getElementById("ws-state");
+    const sizeInfo = document.getElementById("size-info");
+    const retryInfo = document.getElementById("retry-info");
+    const fontDecBtn = document.getElementById("font-dec");
+    const fontIncBtn = document.getElementById("font-inc");
+    const fontSizeInfo = document.getElementById("font-size-info");
+    const resetViewBtn = document.getElementById("reset-view");
+    const mobileTools = document.querySelector(".mobile-tools");
+    const toolsToggleBtn = document.getElementById("tools-toggle");
+    const commandInput = document.getElementById("cmd-input");
+    const focusTermBtn = document.getElementById("focus-term");
+    const clearViewBtn = document.getElementById("clear-view");
+    const toolButtons = Array.from(document.querySelectorAll(".tool-btn[data-key]"));
+    const actionButtons = Array.from(document.querySelectorAll(".tool-btn[data-action]"));
+    let ws = null;
+    let reconnectAttempt = 0;
+    let closedByServer = false;
+    let inAltScreen = false;
+
+    const setStatus = (text, cls) => {
+      statusText.textContent = text;
+      status.className = "status " + (cls || "");
+    };
+
+    const setWSState = (value) => {
+      wsState.textContent = "WS: " + value;
+    };
+
+    const setRetryInfo = () => {
+      retryInfo.textContent = "Retries: " + reconnectAttempt;
+    };
+
+    const setSizeInfo = () => {
+      sizeInfo.textContent = "Size: " + term.cols + " x " + term.rows;
+    };
+
+    const setFontInfo = () => {
+      fontSizeInfo.textContent = "Font: " + currentFontSize;
+      fontDecBtn.disabled = currentFontSize <= MIN_FONT_SIZE;
+      fontIncBtn.disabled = currentFontSize >= MAX_FONT_SIZE;
+    };
+
+    const reconnectDelay = () => Math.min(1000 * Math.max(1, reconnectAttempt), 5000);
+
+    const sendResize = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      setSizeInfo();
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    };
+
+    const resetTerminalViewState = () => {
+      term.write("\x1b[0m\x1b[22m\x1b[23m\x1b[24m\x1b[27m\x1b[28m\x1b[39m\x1b[49m");
+    };
+
+    const fitAndResize = () => {
+      fitAddon.fit();
+      sendResize();
+    };
+
+    let fitTimer = null;
+    const scheduleFit = (delay = 90) => {
+      if (fitTimer) clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => {
+        fitAndResize();
+      }, delay);
+    };
+
+    const bootstrapFit = () => {
+      scheduleFit(0);
+      scheduleFit(40);
+      scheduleFit(120);
+      scheduleFit(260);
+    };
+
+    const applyFontSize = (nextSize) => {
+      const next = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(nextSize)));
+      if (next === currentFontSize) {
+        setFontInfo();
+        return;
+      }
+      currentFontSize = next;
+      term.options.fontSize = currentFontSize;
+      localStorage.setItem(FONT_SIZE_KEY, String(currentFontSize));
+      setFontInfo();
+      scheduleFit(10);
+    };
+
+    const trackScreenMode = (chunk) => {
+      if (!chunk) return;
+      if (chunk.includes("\x1b[?1049h") || chunk.includes("\x1b[?1047h") || chunk.includes("\x1b[?47h")) {
+        inAltScreen = true;
+      }
+      if (chunk.includes("\x1b[?1049l") || chunk.includes("\x1b[?1047l") || chunk.includes("\x1b[?47l")) {
+        inAltScreen = false;
+      }
+    };
+
+    const forceRestoreDisplay = () => {
+      term.write("\x1b[?1049l\x1b[?1047l\x1b[?47l\x1b[0m\x1b[2J\x1b[H");
+      inAltScreen = false;
+    };
+
+    const specialKeys = {
+      enter: "\r",
+      ctrlc: "\u0003",
+      ctrld: "\u0004",
+      tab: "\t",
+      up: "\u001b[A",
+      down: "\u001b[B"
+    };
+
+    const normalizeCommandForInteractiveCLI = (command) => {
+      const trimmed = command.trim();
+      if (!trimmed) return command;
+      const first = trimmed.split(/\s+/)[0].toLowerCase();
+      if (first === "codex" || first === "opencode") {
+        return "TERM=dumb NO_COLOR=1 CLICOLOR=0 FORCE_COLOR=0 " + command;
+      }
+      return command;
+    };
+
+    const sendRaw = (data) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setStatus("Disconnected", "err");
+        setWSState("closed");
+        return false;
+      }
+      ws.send(data);
+      if (data === "\u0003" && inAltScreen) {
+        setTimeout(forceRestoreDisplay, 80);
+      }
+      return true;
+    };
+
+    const connect = () => {
+      ws = new WebSocket(wsURL);
+      setStatus("Connecting...", "");
+      setWSState("connecting");
+      setRetryInfo();
+
+      ws.onopen = () => {
+        reconnectAttempt = 0;
+        setStatus("Connected", "ok");
+        setWSState("open");
+        setRetryInfo();
+        term.writeln("\x1b[1;32mConnected\x1b[0m");
+        resetTerminalViewState();
+        bootstrapFit();
+      };
+
+      ws.onclose = () => {
+        if (closedByServer) {
+          setStatus("Session closed", "err");
+          setWSState("closed");
+          term.writeln("\r\n\x1b[1;31mSession closed\x1b[0m");
+          return;
+        }
+        reconnectAttempt += 1;
+        setRetryInfo();
+        const waitMs = reconnectDelay();
+        setStatus("Disconnected, reconnecting in " + Math.round(waitMs / 1000) + "s...", "");
+        setWSState("reconnecting");
+        setTimeout(connect, waitMs);
+      };
+
+      ws.onerror = () => {
+        setStatus("Connection error", "err");
+        setWSState("error");
+      };
+
+      ws.onmessage = (evt) => {
+        trackScreenMode(evt.data);
+        term.write(evt.data);
+      };
+    };
+
+    connect();
+
+    window.addEventListener("beforeunload", () => {
+      closedByServer = true;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    });
+
+    window.addEventListener("resize", fitAndResize);
+    window.addEventListener("orientationchange", () => scheduleFit(140));
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", () => scheduleFit(80));
+      window.visualViewport.addEventListener("scroll", () => scheduleFit(80));
+    }
+    setSizeInfo();
+    setFontInfo();
+    bootstrapFit();
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => bootstrapFit());
+    }
+
+    resetViewBtn.addEventListener("click", () => {
+      term.reset();
+      fitAndResize();
+      term.writeln("\x1b[33mView reset. Session is still running.\x1b[0m");
+    });
+
+    fontDecBtn.addEventListener("click", () => applyFontSize(currentFontSize - 1));
+    fontIncBtn.addEventListener("click", () => applyFontSize(currentFontSize + 1));
+
+    if (toolsToggleBtn && mobileTools) {
+      toolsToggleBtn.addEventListener("click", () => {
+        const isOpen = mobileTools.classList.toggle("open");
+        toolsToggleBtn.textContent = isOpen ? "Hide" : "Tools";
+        scheduleFit(40);
+      });
+    }
+
+    toolButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const payload = specialKeys[btn.dataset.key || ""];
+        if (!payload) return;
+        sendRaw(payload);
+      });
+    });
+
+    actionButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const value = commandInput.value;
+        if (!value.trim()) return;
+        if (btn.dataset.action === "send") {
+          if (sendRaw(value)) commandInput.value = "";
+          return;
+        }
+        if (btn.dataset.action === "run") {
+          const normalized = normalizeCommandForInteractiveCLI(value);
+          if (sendRaw(normalized + "\r")) commandInput.value = "";
+        }
+      });
+    });
+
+    commandInput.addEventListener("keydown", (evt) => {
+      if (evt.key === "Enter") {
+        evt.preventDefault();
+        const value = commandInput.value;
+        if (!value.trim()) return;
+        const normalized = normalizeCommandForInteractiveCLI(value);
+        if (sendRaw(normalized + "\r")) commandInput.value = "";
+      }
+    });
+
+    focusTermBtn.addEventListener("click", () => {
+      term.focus();
+    });
+
+    clearViewBtn.addEventListener("click", () => {
+      term.clear();
+      fitAndResize();
+    });
+
+    if (window.ResizeObserver) {
+      const termContainer = document.getElementById("term");
+      const resizeObserver = new ResizeObserver(() => scheduleFit(30));
+      resizeObserver.observe(termContainer);
+    }
+
+    window.addEventListener("pageshow", () => scheduleFit(20));
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        scheduleFit(20);
+      }
+    });
+
+    term.onData((data) => {
+      sendRaw(data);
+    });
+  </script>
+</body>
+</html>

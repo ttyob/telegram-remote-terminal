@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,6 +22,24 @@ import (
 	"terminal-bridge/internal/terminal"
 	"terminal-bridge/internal/webterm"
 )
+
+func readInstallScript() ([]byte, error) {
+	candidates := []string{"scripts/install-agent.sh"}
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "scripts", "install-agent.sh"),
+			filepath.Join(exeDir, "..", "scripts", "install-agent.sh"),
+		)
+	}
+	for _, p := range candidates {
+		content, err := os.ReadFile(filepath.Clean(p))
+		if err == nil {
+			return content, nil
+		}
+	}
+	return nil, os.ErrNotExist
+}
 
 func main() {
 	cfg, err := config.Load()
@@ -100,7 +119,7 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		content, err := os.ReadFile("scripts/install-agent.sh")
+		content, err := readInstallScript()
 		if err != nil {
 			http.Error(w, "script not found", http.StatusNotFound)
 			return
